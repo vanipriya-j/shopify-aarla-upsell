@@ -1,0 +1,248 @@
+/* Aarla Promotions — prefixed storefront styles only */
+
+.aarla-promo-root {
+  --aarla-promo-max-width: 420px;
+  --aarla-promo-overlay-opacity: 0.45;
+  --aarla-promo-radius: 12px;
+  --aarla-promo-bg: #faf9f7;
+  --aarla-promo-text: #1c1b1a;
+  --aarla-promo-muted: #5c5854;
+  --aarla-promo-border: #e4e0da;
+  --aarla-promo-cta-bg: #1c1b1a;
+  --aarla-promo-cta-text: #faf9f7;
+  --aarla-promo-font:
+    "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia,
+    serif;
+  --aarla-promo-sans: "Avenir Next", "Segoe UI", Helvetica, Arial, sans-serif;
+  position: relative;
+  z-index: 99999;
+}
+
+.aarla-promo-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.25rem;
+  background: rgba(28, 27, 26, var(--aarla-promo-overlay-opacity));
+  box-sizing: border-box;
+}
+
+.aarla-promo-root[data-position="bottom-left"] .aarla-promo-overlay {
+  align-items: flex-end;
+  justify-content: flex-start;
+}
+
+.aarla-promo-root[data-position="bottom-right"] .aarla-promo-overlay {
+  align-items: flex-end;
+  justify-content: flex-end;
+}
+
+.aarla-promo-dialog {
+  position: relative;
+  width: min(100%, var(--aarla-promo-max-width));
+  max-height: min(90vh, 640px);
+  overflow: auto;
+  margin: 0;
+  padding: 1.75rem 1.5rem 1.5rem;
+  border-radius: var(--aarla-promo-radius);
+  background: var(--aarla-promo-bg);
+  color: var(--aarla-promo-text);
+  border: 1px solid var(--aarla-promo-border);
+  box-shadow: 0 18px 40px rgba(28, 27, 26, 0.18);
+  font-family: var(--aarla-promo-sans);
+  box-sizing: border-box;
+}
+
+.aarla-promo-root:not(.aarla-promo-root--reduced-motion) .aarla-promo-dialog {
+  animation: aarla-promo-fade-in 220ms ease-out;
+}
+
+.aarla-promo-root:not(.aarla-promo-root--reduced-motion) .aarla-promo-overlay {
+  animation: aarla-promo-overlay-in 220ms ease-out;
+}
+
+@keyframes aarla-promo-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes aarla-promo-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.aarla-promo-dialog__close {
+  position: absolute;
+  top: 0.65rem;
+  right: 0.65rem;
+  width: 2rem;
+  height: 2rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--aarla-promo-muted);
+  font-size: 1.35rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.aarla-promo-dialog__close:focus-visible,
+.aarla-promo-dialog__copy:focus-visible,
+.aarla-promo-dialog__cta:focus-visible,
+.aarla-promo-badge__open:focus-visible,
+.aarla-promo-badge__dismiss:focus-visible {
+  outline: 2px solid var(--aarla-promo-text);
+  outline-offset: 2px;
+}
+
+.aarla-promo-dialog__test {
+  margin: 0 0 0.75rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--aarla-promo-muted);
+}
+
+.aarla-promo-dialog__title {
+  margin: 0 1.5rem 0.75rem 0;
+  font-family: var(--aarla-promo-font);
+  font-size: clamp(1.5rem, 4vw, 1.85rem);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.aarla-promo-dialog__message {
+  margin: 0 0 1.25rem;
+  color: var(--aarla-promo-muted);
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+.aarla-promo-dialog__code-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0 0 1.25rem;
+}
+
+.aarla-promo-dialog__code {
+  display: inline-block;
+  padding: 0.55rem 0.75rem;
+  border: 1px dashed var(--aarla-promo-border);
+  border-radius: calc(var(--aarla-promo-radius) * 0.5);
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+
+.aarla-promo-dialog__copy {
+  border: 1px solid var(--aarla-promo-border);
+  border-radius: calc(var(--aarla-promo-radius) * 0.5);
+  background: #fff;
+  color: var(--aarla-promo-text);
+  padding: 0.55rem 0.85rem;
+  font: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.aarla-promo-dialog__cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: calc(var(--aarla-promo-radius) * 0.5);
+  background: var(--aarla-promo-cta-bg);
+  color: var(--aarla-promo-cta-text);
+  text-decoration: none;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-sizing: border-box;
+}
+
+.aarla-promo-dialog__cta:hover {
+  filter: brightness(1.08);
+}
+
+.aarla-promo-badge {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.2rem;
+  border: 1px solid var(--aarla-promo-border);
+  border-radius: 999px;
+  background: var(--aarla-promo-bg);
+  box-shadow: 0 8px 24px rgba(28, 27, 26, 0.12);
+  font-family: var(--aarla-promo-sans);
+}
+
+.aarla-promo-root:not(.aarla-promo-root--reduced-motion)
+  .aarla-promo-badge:not([hidden]) {
+  animation: aarla-promo-fade-in 200ms ease-out;
+}
+
+.aarla-promo-badge__open {
+  border: 0;
+  background: transparent;
+  color: var(--aarla-promo-text);
+  padding: 0.55rem 0.85rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 16rem;
+}
+
+.aarla-promo-badge__dismiss {
+  border: 0;
+  background: transparent;
+  color: var(--aarla-promo-muted);
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+@media (max-width: 480px) {
+  .aarla-promo-dialog {
+    padding: 1.5rem 1.15rem 1.25rem;
+  }
+
+  .aarla-promo-badge {
+    left: 1rem;
+    right: 1rem;
+    justify-content: space-between;
+  }
+
+  .aarla-promo-badge__open {
+    max-width: none;
+    flex: 1;
+    text-align: left;
+  }
+}
