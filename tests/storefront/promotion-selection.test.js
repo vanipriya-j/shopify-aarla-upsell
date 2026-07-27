@@ -338,7 +338,13 @@ describe("evaluatePromotionsForVisit", () => {
 
   it("does not show welcome for a returning browser", () => {
     const liveStorage = createMemoryStorage();
-    ensureVisitorState(liveStorage, 1_700_000_000_000);
+    // Returning = previously activated a promotion (not merely an empty shell).
+    const prior = activatePromotion(
+      createVisitorState(1_700_000_000_000),
+      campaignA,
+      1_700_000_000_000,
+    );
+    writeVisitorState(liveStorage, clearActivePromotion(prior));
     const result = evaluatePromotionsForVisit({
       config: { global: baseGlobal, promotions: [welcome] },
       liveStorage,
@@ -347,6 +353,90 @@ describe("evaluatePromotionsForVisit", () => {
       now: 1_700_000_000_100,
     });
     expect(result.activePromotion).toBeNull();
+  });
+
+  it("still treats empty leftover visit markers as first visit", () => {
+    const liveStorage = createMemoryStorage();
+    // Older builds wrote a visit marker even when no promo activated.
+    ensureVisitorState(liveStorage, 1_700_000_000_000);
+    expect(liveStorage.getItem("aarla_promotions")).toBeTruthy();
+
+    const result = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [welcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_100,
+    });
+    expect(result.activePromotion?.id).toBe("welcome");
+  });
+
+  it("does not persist localStorage when no promotion matches on first visit", () => {
+    const liveStorage = createMemoryStorage();
+    const result = evaluatePromotionsForVisit({
+      config: {
+        global: baseGlobal,
+        promotions: [{ ...welcome, enabled: false }],
+      },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(result.activePromotion).toBeNull();
+    expect(liveStorage.getItem("aarla_promotions")).toBeNull();
+
+    // A later visit with welcome enabled should still count as first visit.
+    const second = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [welcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_100,
+    });
+    expect(second.activePromotion?.id).toBe("welcome");
+  });
+
+  it("persists database promotion IDs across page loads", () => {
+    const liveStorage = createMemoryStorage();
+    const dbWelcome = promo({
+      id: "cms372cxo0000jsuxml5uk85t",
+      audienceType: "FIRST_VISIT",
+      discountCode: "AARLA10",
+      showOnce: true,
+    });
+    const first = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [dbWelcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(first.state.activePromotionKey).toBe("cms372cxo0000jsuxml5uk85t");
+    expect(readVisitorState(liveStorage)?.activePromotionKey).toBe(
+      "cms372cxo0000jsuxml5uk85t",
+    );
+
+    // Simulate popup viewed (showOnce) then reload.
+    writeVisitorState(liveStorage, {
+      .../** @type {NonNullable<ReturnType<typeof readVisitorState>>} */ (
+        readVisitorState(liveStorage)
+      ),
+      popupViewed: true,
+    });
+
+    const second = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [dbWelcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_100,
+    });
+    expect(second.activePromotion?.id).toBe("cms372cxo0000jsuxml5uk85t");
+    expect(second.suppressPopup).toBe(true);
+    expect(readVisitorState(liveStorage)?.activePromotionKey).toBe(
+      "cms372cxo0000jsuxml5uk85t",
+    );
   });
 
   it("keeps only one active promotion in storage", () => {

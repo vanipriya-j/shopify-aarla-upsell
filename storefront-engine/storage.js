@@ -16,7 +16,14 @@ export function readVisitorState(storage) {
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
-    return normalizeState(parsed);
+    const state = normalizeState(parsed);
+    // Empty shells (written before any promo activated) must not block
+    // first-visit matching — treat them as absent.
+    if (isEmptyVisitorShell(state)) {
+      storage.removeItem(STORAGE_NAMESPACE);
+      return null;
+    }
+    return state;
   } catch {
     return null;
   }
@@ -80,35 +87,63 @@ export function ensureVisitorState(storage, now = Date.now()) {
  * @returns {import('./engine.js').VisitorState}
  */
 function normalizeState(raw) {
+  const activePromotionKey = normalizeKey(raw.activePromotionKey);
+  const promotionActivatedAt = nullableNumber(raw.promotionActivatedAt);
+  const popupViewed = Boolean(raw.popupViewed);
+  const popupDismissed = Boolean(raw.popupDismissed);
+  const hasActivatedPromotion =
+    Boolean(raw.hasActivatedPromotion) ||
+    Boolean(activePromotionKey) ||
+    promotionActivatedAt != null ||
+    popupViewed ||
+    popupDismissed;
+
   return {
     visitorId:
       typeof raw.visitorId === "string" ? raw.visitorId : createFallbackId(),
     firstVisitAt: numberOr(raw.firstVisitAt, Date.now()),
     lastVisitAt: numberOr(raw.lastVisitAt, Date.now()),
-    activePromotionKey: normalizeKey(raw.activePromotionKey),
+    activePromotionKey,
     activeDiscountCode:
       typeof raw.activeDiscountCode === "string" &&
       raw.activeDiscountCode.trim()
         ? raw.activeDiscountCode.trim()
         : null,
-    promotionActivatedAt: nullableNumber(raw.promotionActivatedAt),
+    promotionActivatedAt,
     promotionExpiresAt: nullableNumber(raw.promotionExpiresAt),
-    popupViewed: Boolean(raw.popupViewed),
-    popupDismissed: Boolean(raw.popupDismissed),
+    popupViewed,
+    popupDismissed,
     popupDismissedAt: nullableNumber(raw.popupDismissedAt),
     badgeDismissed: Boolean(raw.badgeDismissed),
+    hasActivatedPromotion,
   };
 }
 
 /**
+ * Accept legacy keys and database promotion IDs.
  * @param {unknown} value
- * @returns {import('./engine.js').PromotionKey | null}
+ * @returns {string | null}
  */
 function normalizeKey(value) {
-  if (value === "welcome" || value === "campaign_a" || value === "campaign_b") {
-    return value;
-  }
-  return null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/**
+ * Visit marker with no activation history — leftover from older builds that
+ * wrote localStorage on every page load before a promo matched.
+ * @param {import('./engine.js').VisitorState} state
+ */
+function isEmptyVisitorShell(state) {
+  return (
+    !state.hasActivatedPromotion &&
+    state.activePromotionKey == null &&
+    state.promotionActivatedAt == null &&
+    !state.popupViewed &&
+    !state.popupDismissed &&
+    !state.activeDiscountCode
+  );
 }
 
 /**

@@ -90,6 +90,7 @@ export const AUDIENCE_MATCH_ORDER = /** @type {const} */ ([
  * @property {boolean} popupDismissed
  * @property {number | null} popupDismissedAt
  * @property {boolean} badgeDismissed
+ * @property {boolean} [hasActivatedPromotion] sticky flag — survives clear/expiry
  */
 
 /**
@@ -673,6 +674,7 @@ export function createVisitorState(
     popupDismissed: false,
     popupDismissedAt: null,
     badgeDismissed: false,
+    hasActivatedPromotion: false,
   };
 }
 
@@ -704,6 +706,13 @@ export function clearActivePromotion(state) {
     popupDismissed: false,
     popupDismissedAt: null,
     badgeDismissed: false,
+    // Keep sticky visit marker so expired campaigns don't re-trigger first-visit.
+    hasActivatedPromotion:
+      Boolean(state.hasActivatedPromotion) ||
+      Boolean(state.activePromotionKey) ||
+      state.promotionActivatedAt != null ||
+      state.popupViewed ||
+      state.popupDismissed,
   };
 }
 
@@ -727,6 +736,7 @@ export function activatePromotion(state, promotion, now = Date.now()) {
     popupDismissed: false,
     popupDismissedAt: null,
     badgeDismissed: false,
+    hasActivatedPromotion: true,
   };
 }
 

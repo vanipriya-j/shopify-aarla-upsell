@@ -2,6 +2,7 @@ import {
   activatePromotion,
   buildDiscountUrl,
   clearActivePromotion,
+  createVisitorState,
   filterScheduledPromotions,
   getCtaUrl,
   getPromotionId,
@@ -16,6 +17,7 @@ import {
   createMemoryStorage,
   ensureVisitorState,
   readVisitorState,
+  touchVisitorState,
   writeVisitorState,
 } from "./storage.js";
 
@@ -249,19 +251,28 @@ export function evaluatePromotionsForVisit({
   let isFirstVisit = false;
   /** @type {import('./engine.js').VisitorState} */
   let state;
+  /** Whether localStorage already had a real visitor record before this run. */
+  let hadExistingState = false;
 
   if (testMode) {
     const ensured = ensureVisitorState(storage, now);
     state = ensured.state;
     isFirstVisit = true;
+    hadExistingState = true;
   } else {
     const existing = readVisitorState(storage);
     isFirstVisit = existing == null;
-    const ensured = ensureVisitorState(storage, now);
-    state = ensured.state;
+    hadExistingState = existing != null;
+    if (existing) {
+      state = touchVisitorState(existing, now);
+    } else {
+      // In-memory only — do not persist until a promotion activates.
+      // Otherwise a no-match page load permanently blocks first-visit.
+      state = createVisitorState(now);
+    }
   }
 
-  if (isPromotionExpired(state, now)) {
+  if (hadExistingState && isPromotionExpired(state, now)) {
     state = clearActivePromotion(state);
     writeVisitorState(storage, state);
   }
@@ -311,16 +322,22 @@ export function evaluatePromotionsForVisit({
     now,
   });
 
+  let shouldPersist = hadExistingState || testMode;
+
   if (resolution.action === "clear") {
     state = clearActivePromotion(state);
+    shouldPersist = hadExistingState || testMode;
   } else if (
     (resolution.action === "activate" || resolution.action === "replace") &&
     resolution.promotion
   ) {
     state = activatePromotion(state, resolution.promotion, now);
+    shouldPersist = true;
   }
 
-  writeVisitorState(storage, state);
+  if (shouldPersist) {
+    writeVisitorState(storage, state);
+  }
 
   const activePromotion = state.activePromotionKey
     ? promotions.find(
