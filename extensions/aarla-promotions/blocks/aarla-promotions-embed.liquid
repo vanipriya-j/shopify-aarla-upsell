@@ -1,0 +1,135 @@
+{% comment %}
+  Aarla Promotions — single app embed with global storefront settings.
+  Promotion content and targeting are managed in the embedded admin app.
+{% endcomment %}
+
+<script
+  type="application/json"
+  data-aarla-promotions-config
+  data-aarla-promotions-source="main"
+>
+  {
+    "global": {
+      "enabled": {{ block.settings.enabled | json }},
+      "testMode": {{ block.settings.test_mode | json }},
+      "testPreview": {{ block.settings.test_preview | json }},
+      "popupDelayMs": {{ block.settings.popup_delay_ms | json }},
+      "popupPosition": {{ block.settings.popup_position | json }},
+      "popupMaxWidth": {{ block.settings.popup_max_width | json }},
+      "overlayOpacity": {{ block.settings.overlay_opacity | times: 0.01 | json }},
+      "borderRadius": {{ block.settings.border_radius | json }},
+      "showReminderBadge": {{ block.settings.show_reminder_badge | json }},
+      "debugLogging": {{ block.settings.debug_logging | json }},
+      "apiEndpoint": {{ block.settings.api_endpoint | json }}
+    },
+    "shop": {{ shop.permanent_domain | json }},
+    "i18n": {
+      "close": {{ 'aarla_promotions.close' | t | json }},
+      "copy_code": {{ 'aarla_promotions.copy_code' | t | json }},
+      "copied": {{ 'aarla_promotions.copied' | t | json }},
+      "apply_and_shop": {{ 'aarla_promotions.apply_and_shop' | t | json }},
+      "test_mode_label": {{ 'aarla_promotions.test_mode_label' | t | json }},
+      "reminder_with_code": {{ 'aarla_promotions.reminder_with_code' | t | json }},
+      "reminder_without_code": {{ 'aarla_promotions.reminder_without_code' | t | json }},
+      "dismiss_reminder": {{ 'aarla_promotions.dismiss_reminder' | t | json }}
+    }
+  }
+</script>
+
+{% schema %}
+{
+  "name": "Aarla Promotions",
+  "target": "body",
+  "stylesheet": "aarla-promotions.css",
+  "javascript": "aarla-promotions.js",
+  "settings": [
+    {
+      "type": "header",
+      "content": "Global settings"
+    },
+    {
+      "type": "checkbox",
+      "id": "enabled",
+      "label": "Enable Aarla Promotions",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "test_mode",
+      "label": "Test mode",
+      "default": false,
+      "info": "Preview without writing live visitor localStorage. Use Test preview ID below."
+    },
+    {
+      "type": "text",
+      "id": "test_preview",
+      "label": "Test mode promotion ID",
+      "default": "automatic",
+      "info": "Use automatic or paste a promotion ID from the admin app."
+    },
+    {
+      "type": "number",
+      "id": "popup_delay_ms",
+      "label": "Default popup delay (ms)",
+      "default": 1200,
+      "info": "Used when a promotion does not set its own delay."
+    },
+    {
+      "type": "select",
+      "id": "popup_position",
+      "label": "Popup position",
+      "options": [
+        { "value": "center", "label": "Center" },
+        { "value": "bottom-left", "label": "Bottom left" },
+        { "value": "bottom-right", "label": "Bottom right" }
+      ],
+      "default": "center"
+    },
+    {
+      "type": "number",
+      "id": "popup_max_width",
+      "label": "Popup maximum width",
+      "default": 420
+    },
+    {
+      "type": "range",
+      "id": "overlay_opacity",
+      "label": "Overlay opacity",
+      "min": 0,
+      "max": 100,
+      "step": 5,
+      "unit": "%",
+      "default": 45
+    },
+    {
+      "type": "range",
+      "id": "border_radius",
+      "label": "Border radius",
+      "min": 0,
+      "max": 32,
+      "step": 1,
+      "unit": "px",
+      "default": 12
+    },
+    {
+      "type": "checkbox",
+      "id": "show_reminder_badge",
+      "label": "Show reminder badge",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "debug_logging",
+      "label": "Debug logging",
+      "default": false
+    },
+    {
+      "type": "text",
+      "id": "api_endpoint",
+      "label": "Active promotions API path",
+      "default": "/apps/aarla-promotions/active",
+      "info": "App proxy path that returns active promotions for this shop."
+    }
+  ]
+}
+{% endschema %}
