@@ -15,12 +15,28 @@ import {
   updatePromotionPriority,
 } from "../models/promotions.server";
 import { AUDIENCE_LABELS } from "../promotions/form";
+import {
+  buildEmbedDeepLink,
+  buildForceFirstVisitUrl,
+  readCliPreviewThemeId,
+} from "../promotions/setup-links.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   await ensureDefaultPromotions(session.shop);
   const promotions = await listPromotions(session.shop);
-  return { promotions, shop: session.shop };
+  const apiKey = process.env.SHOPIFY_API_KEY || "";
+  const previewThemeId = readCliPreviewThemeId(session.shop);
+  return {
+    promotions,
+    shop: session.shop,
+    previewThemeId,
+    embedDeepLink: buildEmbedDeepLink(session.shop, apiKey),
+    forceFirstVisitUrl: buildForceFirstVisitUrl(
+      session.shop,
+      previewThemeId,
+    ),
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -59,13 +75,32 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function PromotionsIndex() {
-  const { promotions } = useLoaderData<typeof loader>();
+  const { promotions, embedDeepLink, forceFirstVisitUrl, previewThemeId } =
+    useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Aarla Promotions">
       <s-button slot="primary-action" href="/app/promotions/new">
         Create promotion
       </s-button>
+
+      <s-section heading="Storefront setup">
+        <s-paragraph>
+          First visit only works on a theme where the app embed is enabled and
+          saved. During local development that is the CLI preview theme, not the
+          live published theme
+          {previewThemeId ? ` (preview theme ${previewThemeId})` : ""}.
+        </s-paragraph>
+        <s-stack direction="inline" gap="base">
+          <s-link href={embedDeepLink} target="_blank">
+            Activate theme embed
+          </s-link>
+          <s-link href={forceFirstVisitUrl} target="_blank">
+            Test first visit
+          </s-link>
+          <s-link href="/app/additional">Full setup guide</s-link>
+        </s-stack>
+      </s-section>
 
       <s-section heading="Promotions">
         <s-paragraph>
@@ -147,8 +182,15 @@ export default function PromotionsIndex() {
 
       <s-section slot="aside" heading="Theme embed">
         <s-paragraph>
-          Enable <s-text type="strong">Aarla Promotions</s-text> under Online
-          Store → Themes → Customize → App embeds.
+          Enable <s-text type="strong">Aarla Promotions</s-text> under App
+          embeds, then Save. Opening the normal storefront URL without the
+          preview theme will not show the popup while you are running{" "}
+          <code>shopify app dev</code>.
+        </s-paragraph>
+        <s-paragraph>
+          <s-link href={embedDeepLink} target="_blank">
+            Open App embeds
+          </s-link>
         </s-paragraph>
         <s-paragraph>
           Create discount codes in Shopify Admin → Discounts, then reference the

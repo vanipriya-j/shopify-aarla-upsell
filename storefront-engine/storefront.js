@@ -12,6 +12,7 @@ import {
   resolveActivePromotion,
   selectPromotion,
   shouldSuppressPopup,
+  STORAGE_NAMESPACE,
 } from "./engine.js";
 import {
   createMemoryStorage,
@@ -23,6 +24,24 @@ import {
 
 const ROOT_ID = "aarla-promo-root";
 const CONFIG_SELECTOR = "[data-aarla-promotions-config]";
+const FORCE_FIRST_VISIT_PARAM = "aarla_force_first_visit";
+
+/**
+ * QA helper: ?aarla_force_first_visit=1 (or true) clears the visit marker and
+ * re-runs first-visit matching for this page load.
+ * @param {string} search
+ */
+export function shouldForceFirstVisit(search) {
+  try {
+    const params = new URLSearchParams(
+      search.startsWith("?") ? search.slice(1) : search,
+    );
+    const value = (params.get(FORCE_FIRST_VISIT_PARAM) || "").toLowerCase();
+    return value === "1" || value === "true" || value === "yes";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * @param {Document} document
@@ -245,6 +264,12 @@ export function evaluatePromotionsForVisit({
   const testMode = Boolean(config.global.testMode);
   const storage = testMode ? testStorage || createMemoryStorage() : liveStorage;
 
+  const forceFirstVisit = shouldForceFirstVisit(search);
+  if (forceFirstVisit && liveStorage && !testMode) {
+    // Merchant QA helper: ?aarla_force_first_visit=1 clears the visit marker.
+    liveStorage.removeItem(STORAGE_NAMESPACE);
+  }
+
   const liveSnapshot = liveStorage ? readVisitorState(liveStorage) : null;
   const utm = readUtmParams(search);
 
@@ -260,7 +285,7 @@ export function evaluatePromotionsForVisit({
     isFirstVisit = true;
     hadExistingState = true;
   } else {
-    const existing = readVisitorState(storage);
+    const existing = forceFirstVisit ? null : readVisitorState(storage);
     isFirstVisit = existing == null;
     hadExistingState = existing != null;
     if (existing) {

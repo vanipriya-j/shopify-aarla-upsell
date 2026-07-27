@@ -439,6 +439,29 @@ describe("evaluatePromotionsForVisit", () => {
     );
   });
 
+  it("re-triggers first visit when aarla_force_first_visit=1", () => {
+    const liveStorage = createMemoryStorage();
+    const prior = activatePromotion(
+      createVisitorState(1_700_000_000_000),
+      campaignA,
+      1_700_000_000_000,
+    );
+    writeVisitorState(liveStorage, {
+      ...prior,
+      popupViewed: true,
+    });
+
+    const result = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [welcome] },
+      liveStorage,
+      search: "?aarla_force_first_visit=1",
+      pathname: "/",
+      now: 1_700_000_000_200,
+    });
+    expect(result.activePromotion?.id).toBe("welcome");
+    expect(result.suppressPopup).toBe(false);
+  });
+
   it("keeps only one active promotion in storage", () => {
     const liveStorage = createMemoryStorage();
     const first = evaluatePromotionsForVisit({
@@ -794,5 +817,17 @@ describe("schedule and API fallback", () => {
     });
     expect(result.state.activePromotionKey).toBe("campaign_a");
     expect(result.activePromotion?.discountCode).toBe("CAMPAIGNA");
+  });
+});
+
+describe("shouldForceFirstVisit", () => {
+  it("detects force query values", async () => {
+    const { shouldForceFirstVisit } = await import(
+      "../../storefront-engine/storefront.js"
+    );
+    expect(shouldForceFirstVisit("?aarla_force_first_visit=1")).toBe(true);
+    expect(shouldForceFirstVisit("?aarla_force_first_visit=true")).toBe(true);
+    expect(shouldForceFirstVisit("")).toBe(false);
+    expect(shouldForceFirstVisit("?utm_source=meta")).toBe(false);
   });
 });
