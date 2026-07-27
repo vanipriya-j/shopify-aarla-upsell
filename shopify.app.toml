@@ -8,11 +8,16 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [access_scopes]
-# Theme app extension only for V1 — no Admin discount APIs required.
-scopes = ""
+# Products/collections for resource pickers + collection expansion on save.
+scopes = "read_products"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
+
+[app_proxy]
+url = "https://example.com/apps/aarla-promotions"
+subpath = "aarla-promotions"
+prefix = "apps"
 
 [webhooks]
 api_version = "2025-10"

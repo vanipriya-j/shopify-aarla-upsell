@@ -1,7 +1,6 @@
 {% comment %}
-  Aarla Promotions — main app embed (global settings + welcome slot).
-  Campaign slots are separate embeds due to Shopify's 25-setting block limit.
-  Configurable text is exposed via JSON only (never interpolated into JS).
+  Aarla Promotions — single app embed with global storefront settings.
+  Promotion content and targeting are managed in the embedded admin app.
 {% endcomment %}
 
 <script
@@ -20,23 +19,10 @@
       "overlayOpacity": {{ block.settings.overlay_opacity | times: 0.01 | json }},
       "borderRadius": {{ block.settings.border_radius | json }},
       "showReminderBadge": {{ block.settings.show_reminder_badge | json }},
-      "debugLogging": {{ block.settings.debug_logging | json }}
+      "debugLogging": {{ block.settings.debug_logging | json }},
+      "apiEndpoint": {{ block.settings.api_endpoint | json }}
     },
-    "promotions": [
-      {
-        "key": "welcome",
-        "enabled": {{ block.settings.welcome_enabled | json }},
-        "priority": {{ block.settings.welcome_priority | json }},
-        "headline": {{ block.settings.welcome_headline | json }},
-        "message": {{ block.settings.welcome_message | json }},
-        "discountCode": {{ block.settings.welcome_discount_code | json }},
-        "ctaText": {{ block.settings.welcome_cta_text | json }},
-        "ctaDestination": {{ block.settings.welcome_cta_destination | json }},
-        "validityHours": {{ block.settings.welcome_validity_hours | json }},
-        "showOnce": {{ block.settings.welcome_show_once | json }},
-        "dismissalSuppressionHours": {{ block.settings.welcome_dismissal_hours | json }}
-      }
-    ],
+    "shop": {{ shop.permanent_domain | json }},
     "i18n": {
       "close": {{ 'aarla_promotions.close' | t | json }},
       "copy_code": {{ 'aarla_promotions.copy_code' | t | json }},
@@ -72,25 +58,21 @@
       "id": "test_mode",
       "label": "Test mode",
       "default": false,
-      "info": "Preview promotions without changing live visitor localStorage state."
+      "info": "Preview without writing live visitor localStorage. Use Test preview ID below."
     },
     {
-      "type": "select",
+      "type": "text",
       "id": "test_preview",
-      "label": "Test mode preview",
-      "options": [
-        { "value": "automatic", "label": "Automatic" },
-        { "value": "welcome", "label": "Welcome Promotion" },
-        { "value": "campaign_a", "label": "Campaign Promotion A" },
-        { "value": "campaign_b", "label": "Campaign Promotion B" }
-      ],
-      "default": "automatic"
+      "label": "Test mode promotion ID",
+      "default": "automatic",
+      "info": "Use automatic or paste a promotion ID from the admin app."
     },
     {
       "type": "number",
       "id": "popup_delay_ms",
-      "label": "Popup delay in milliseconds",
-      "default": 1200
+      "label": "Default popup delay (ms)",
+      "default": 1200,
+      "info": "Used when a promotion does not set its own delay."
     },
     {
       "type": "select",
@@ -142,70 +124,11 @@
       "default": false
     },
     {
-      "type": "header",
-      "content": "Welcome promotion"
-    },
-    {
-      "type": "checkbox",
-      "id": "welcome_enabled",
-      "label": "Enabled",
-      "default": false
-    },
-    {
-      "type": "number",
-      "id": "welcome_priority",
-      "label": "Priority",
-      "default": 10,
-      "info": "Higher numbers win when multiple promotions are eligible."
-    },
-    {
       "type": "text",
-      "id": "welcome_headline",
-      "label": "Headline",
-      "default": "Welcome to Aarla"
-    },
-    {
-      "type": "textarea",
-      "id": "welcome_message",
-      "label": "Message",
-      "default": "Enjoy 10% off your first order."
-    },
-    {
-      "type": "text",
-      "id": "welcome_discount_code",
-      "label": "Discount code",
-      "default": "AARLA10",
-      "info": "Create this discount code in Shopify Admin. This app does not create or validate discounts."
-    },
-    {
-      "type": "text",
-      "id": "welcome_cta_text",
-      "label": "CTA text",
-      "default": "Shop Aarla"
-    },
-    {
-      "type": "text",
-      "id": "welcome_cta_destination",
-      "label": "CTA destination",
-      "default": "/collections/all"
-    },
-    {
-      "type": "number",
-      "id": "welcome_validity_hours",
-      "label": "Validity in hours",
-      "default": 24
-    },
-    {
-      "type": "checkbox",
-      "id": "welcome_show_once",
-      "label": "Show once",
-      "default": true
-    },
-    {
-      "type": "number",
-      "id": "welcome_dismissal_hours",
-      "label": "Dismissal suppression in hours",
-      "default": 24
+      "id": "api_endpoint",
+      "label": "Active promotions API path",
+      "default": "/apps/aarla-promotions/active",
+      "info": "App proxy path that returns active promotions for this shop."
     }
   ]
 }

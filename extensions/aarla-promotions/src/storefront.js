@@ -2,6 +2,9 @@ import {
   activatePromotion,
   buildDiscountUrl,
   clearActivePromotion,
+  filterScheduledPromotions,
+  getCtaUrl,
+  getPromotionId,
   hasDiscountCode,
   isPromotionExpired,
   readUtmParams,
@@ -40,8 +43,11 @@ export function loadConfigFromDocument(document) {
       if (parsed.global) global = { ...global, ...parsed.global };
       if (Array.isArray(parsed.promotions)) {
         for (const promo of parsed.promotions) {
-          if (!promo || !promo.key) continue;
-          const index = promotions.findIndex((item) => item.key === promo.key);
+          if (!promo || !(promo.id || promo.key)) continue;
+          const id = promo.id || promo.key;
+          const index = promotions.findIndex(
+            (item) => getPromotionId(item) === id,
+          );
           if (index >= 0)
             promotions[index] = { ...promotions[index], ...promo };
           else promotions.push(promo);
@@ -53,15 +59,11 @@ export function loadConfigFromDocument(document) {
     }
   }
 
-  if (!promotions.some((promo) => promo.key === "welcome")) {
-    // Welcome config lives on the main embed; if missing, continue with campaigns only.
-  }
-
   return {
     global: {
       enabled: Boolean(global.enabled),
       testMode: Boolean(global.testMode),
-      testPreview: normalizePreview(global.testPreview),
+      testPreview: global.testPreview || "automatic",
       popupDelayMs: Number(global.popupDelayMs) || 0,
       popupPosition: normalizePosition(global.popupPosition),
       popupMaxWidth: Number(global.popupMaxWidth) || 420,
@@ -71,26 +73,11 @@ export function loadConfigFromDocument(document) {
         : 12,
       showReminderBadge: Boolean(global.showReminderBadge),
       debugLogging: Boolean(global.debugLogging),
+      apiEndpoint: global.apiEndpoint || "/apps/aarla-promotions/active",
     },
     promotions,
     i18n,
   };
-}
-
-/**
- * @param {unknown} value
- * @returns {'automatic' | import('./engine.js').PromotionKey}
- */
-function normalizePreview(value) {
-  if (
-    value === "welcome" ||
-    value === "campaign_a" ||
-    value === "campaign_b" ||
-    value === "automatic"
-  ) {
-    return value;
-  }
-  return "automatic";
 }
 
 /**
@@ -118,36 +105,152 @@ function clamp(value, min, max) {
 }
 
 /**
+ * Fetch active promotions from the app proxy / API.
+ * Fails silently and returns [].
+ * @param {string} endpoint
+ * @param {typeof fetch} [fetchImpl]
+ */
+export async function fetchActivePromotions(
+  endpoint,
+  fetchImpl = globalThis.fetch,
+) {
+  if (!endpoint || typeof fetchImpl !== "function") return [];
+  try {
+    const response = await fetchImpl(endpoint, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    if (!data || !Array.isArray(data.promotions)) return [];
+    return data.promotions.map(normalizeFetchedPromotion);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} promo
+ * @returns {import('./engine.js').PromotionConfig}
+ */
+function normalizeFetchedPromotion(promo) {
+  return {
+    id: String(promo.id || ""),
+    enabled: promo.enabled !== false,
+    priority: Number(promo.priority) || 0,
+    audienceType: String(promo.audienceType || "FIRST_VISIT"),
+    displayType: String(promo.displayType || "POPUP"),
+    headline: String(promo.headline || ""),
+    message: String(promo.message || ""),
+    discountCode: String(promo.discountCode || ""),
+    ctaText: String(promo.ctaText || ""),
+    ctaUrl: String(promo.ctaUrl || promo.ctaDestination || "/"),
+    popupDelayMs: Number(promo.popupDelayMs) || 0,
+    validityHours: Number(promo.validityHours) || 24,
+    showOnce: Boolean(promo.showOnce),
+    dismissalSuppressionHours: Number(promo.dismissalSuppressionHours) || 24,
+    utmSource: promo.utmSource ? String(promo.utmSource) : undefined,
+    utmMedium: promo.utmMedium ? String(promo.utmMedium) : undefined,
+    utmCampaign: promo.utmCampaign ? String(promo.utmCampaign) : undefined,
+    utmContent: promo.utmContent ? String(promo.utmContent) : undefined,
+    landingPath: promo.landingPath
+      ? String(promo.landingPath)
+      : promo.landingPagePath
+        ? String(promo.landingPagePath)
+        : undefined,
+    minimumCartValue:
+      promo.minimumCartValue == null ? null : Number(promo.minimumCartValue),
+    targets: Array.isArray(promo.targets)
+      ? promo.targets.map((t) => ({
+          targetType: String(t.targetType || ""),
+          shopifyResourceId: String(t.shopifyResourceId || ""),
+        }))
+      : [],
+    startsAt: promo.startsAt,
+    endsAt: promo.endsAt,
+  };
+}
+
+/**
+ * Read product context from Shopify theme meta when available.
+ * @param {Window & typeof globalThis} window
+ */
+export function readProductContext(window) {
+  const meta = window.meta || window.ShopifyAnalytics?.meta || null;
+  const product = meta?.product;
+  if (!product) {
+    return { productId: null, variantId: null };
+  }
+  return {
+    productId: product.gid || (product.id != null ? String(product.id) : null),
+    variantId:
+      product.selectedVariantGid ||
+      (product.variants && product.variants[0]
+        ? String(product.variants[0].id)
+        : null),
+  };
+}
+
+/**
+ * @param {typeof fetch} [fetchImpl]
+ */
+export async function fetchCart(fetchImpl = globalThis.fetch) {
+  try {
+    const response = await fetchImpl("/cart.js", {
+      headers: { Accept: "application/json" },
+      credentials: "same-origin",
+    });
+    if (!response.ok) return { items: [], total_price: 0 };
+    const cart = await response.json();
+    return {
+      items: Array.isArray(cart.items) ? cart.items : [],
+      total_price: Number(cart.total_price) || 0,
+    };
+  } catch {
+    return { items: [], total_price: 0 };
+  }
+}
+
+/**
  * Core orchestration used by the storefront and unit tests.
  * @param {object} input
  * @param {import('./engine.js').AppConfig} input.config
+ * @param {import('./engine.js').PromotionConfig[]} [input.promotions]
  * @param {Storage | null} input.liveStorage
  * @param {string} input.search
  * @param {string} input.pathname
  * @param {number} [input.now]
  * @param {Storage} [input.testStorage]
+ * @param {string | null} [input.productId]
+ * @param {string | null} [input.variantId]
+ * @param {import('./engine.js').CartLine[]} [input.cartItems]
+ * @param {number} [input.cartTotal]
  */
 export function evaluatePromotionsForVisit({
   config,
+  promotions: promotionsInput,
   liveStorage,
   search,
   pathname,
   now = Date.now(),
   testStorage,
+  productId = null,
+  variantId = null,
+  cartItems = [],
+  cartTotal = 0,
 }) {
   const testMode = Boolean(config.global.testMode);
   const storage = testMode ? testStorage || createMemoryStorage() : liveStorage;
 
-  // Snapshot live state before test-mode work so callers can assert it is unchanged.
   const liveSnapshot = liveStorage ? readVisitorState(liveStorage) : null;
-
   const utm = readUtmParams(search);
+
   let isFirstVisit = false;
   /** @type {import('./engine.js').VisitorState} */
   let state;
 
   if (testMode) {
-    // Ignore normal first-visit suppression while previewing.
     const ensured = ensureVisitorState(storage, now);
     state = ensured.state;
     isFirstVisit = true;
@@ -163,28 +266,48 @@ export function evaluatePromotionsForVisit({
     writeVisitorState(storage, state);
   }
 
+  const sourcePromotions =
+    promotionsInput ||
+    config.promotions ||
+    /** @type {import('./engine.js').PromotionConfig[]} */ ([]);
+
+  const promotions = filterScheduledPromotions(sourcePromotions, now).map(
+    (promo) => ({
+      ...promo,
+      enabled: promo.enabled !== false,
+      ctaUrl: getCtaUrl(promo),
+      id: getPromotionId(promo),
+    }),
+  );
+
   /** @type {import('./engine.js').PromotionConfig | null} */
   let candidate = null;
 
   if (testMode && config.global.testPreview !== "automatic") {
     candidate =
-      config.promotions.find(
-        (promo) => promo.enabled && promo.key === config.global.testPreview,
+      promotions.find(
+        (promo) =>
+          promo.enabled && getPromotionId(promo) === config.global.testPreview,
       ) || null;
   } else {
     candidate = selectPromotion({
-      promotions: config.promotions,
+      promotions,
       utm,
       currentPath: pathname,
       isFirstTimeVisitor:
         isFirstVisit || (testMode && config.global.testPreview === "automatic"),
+      isReturningVisitor: !isFirstVisit,
+      productId,
+      variantId,
+      cartItems,
+      cartTotal,
     });
   }
 
   const resolution = resolveActivePromotion({
     candidate,
     state,
-    promotions: config.promotions,
+    promotions,
     now,
   });
 
@@ -200,14 +323,20 @@ export function evaluatePromotionsForVisit({
   writeVisitorState(storage, state);
 
   const activePromotion = state.activePromotionKey
-    ? config.promotions.find(
-        (promo) => promo.key === state.activePromotionKey,
+    ? promotions.find(
+        (promo) => getPromotionId(promo) === state.activePromotionKey,
       ) || null
     : null;
 
   const suppressPopup = activePromotion
     ? shouldSuppressPopup(state, activePromotion, now) && !testMode
     : true;
+
+  const delayMs = activePromotion
+    ? Number(activePromotion.popupDelayMs) ||
+      Number(config.global.popupDelayMs) ||
+      0
+    : 0;
 
   return {
     testMode,
@@ -216,11 +345,12 @@ export function evaluatePromotionsForVisit({
     activePromotion,
     suppressPopup,
     liveSnapshot,
+    delayMs,
     discountUrl:
       activePromotion && hasDiscountCode(activePromotion.discountCode)
         ? buildDiscountUrl(
             activePromotion.discountCode,
-            activePromotion.ctaDestination || "/",
+            getCtaUrl(activePromotion),
           )
         : null,
   };
@@ -241,28 +371,15 @@ export function initAarlaPromotions(window) {
     }
   };
 
-  const evaluation = evaluatePromotionsForVisit({
-    config,
-    liveStorage: window.localStorage,
-    search: window.location.search,
-    pathname: window.location.pathname,
-  });
-
-  log("evaluation", {
-    active: evaluation.activePromotion?.key || null,
-    suppressPopup: evaluation.suppressPopup,
-    testMode: evaluation.testMode,
-  });
-
   const controller = createUiController({
     window,
     document,
     config,
-    evaluation,
     log,
   });
 
-  controller.mount();
+  // Non-blocking: fetch promotions after page load.
+  void controller.start();
   return controller;
 }
 
@@ -271,10 +388,9 @@ export function initAarlaPromotions(window) {
  * @param {Window & typeof globalThis} ctx.window
  * @param {Document} ctx.document
  * @param {import('./engine.js').AppConfig} ctx.config
- * @param {ReturnType<typeof evaluatePromotionsForVisit>} ctx.evaluation
  * @param {(...args: unknown[]) => void} ctx.log
  */
-function createUiController({ window, document, config, evaluation, log }) {
+function createUiController({ window, document, config, log }) {
   /** @type {HTMLElement | null} */
   let root = null;
   /** @type {HTMLElement | null} */
@@ -286,17 +402,68 @@ function createUiController({ window, document, config, evaluation, log }) {
   /** @type {number | null} */
   let openTimer = null;
   let isOpen = false;
+  /** @type {ReturnType<typeof evaluatePromotionsForVisit> | null} */
+  let evaluation = null;
 
   const reducedMotion = window.matchMedia
     ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
     : false;
 
   function persist() {
+    if (!evaluation) return;
     writeVisitorState(evaluation.storage, evaluation.state);
   }
 
+  async function start() {
+    try {
+      const endpoint =
+        config.global.apiEndpoint || "/apps/aarla-promotions/active";
+      const remotePromotions = await fetchActivePromotions(
+        endpoint,
+        window.fetch.bind(window),
+      );
+
+      // If API fails, fail silently — no promotion, no storefront breakage.
+      if (!remotePromotions.length && !(config.promotions || []).length) {
+        log("no promotions available");
+        return;
+      }
+
+      const product = readProductContext(window);
+      const cart = await fetchCart(window.fetch.bind(window));
+
+      evaluation = evaluatePromotionsForVisit({
+        config,
+        promotions: remotePromotions.length
+          ? remotePromotions
+          : config.promotions || [],
+        liveStorage: window.localStorage,
+        search: window.location.search,
+        pathname: window.location.pathname,
+        productId: product.productId,
+        variantId: product.variantId,
+        cartItems: cart.items,
+        cartTotal: cart.total_price,
+      });
+
+      log("evaluation", {
+        active: evaluation.activePromotion
+          ? getPromotionId(evaluation.activePromotion)
+          : null,
+        suppressPopup: evaluation.suppressPopup,
+        testMode: evaluation.testMode,
+      });
+
+      mount();
+    } catch (error) {
+      log("initialization failed silently", error);
+    }
+  }
+
   function mount() {
+    if (!evaluation?.activePromotion) return;
     if (document.getElementById(ROOT_ID)) return;
+
     root = document.createElement("div");
     root.id = ROOT_ID;
     root.className = "aarla-promo-root";
@@ -316,14 +483,9 @@ function createUiController({ window, document, config, evaluation, log }) {
     if (reducedMotion) root.classList.add("aarla-promo-root--reduced-motion");
     document.body.appendChild(root);
 
-    if (!evaluation.activePromotion) {
-      log("no active promotion");
-      return;
-    }
-
     renderBadge();
     if (!evaluation.suppressPopup) {
-      const delay = Math.max(0, config.global.popupDelayMs || 0);
+      const delay = Math.max(0, evaluation.delayMs || 0);
       openTimer = window.setTimeout(() => openPopup(), delay);
     } else if (
       config.global.showReminderBadge &&
@@ -334,7 +496,7 @@ function createUiController({ window, document, config, evaluation, log }) {
   }
 
   function renderBadge() {
-    if (!root || !evaluation.activePromotion) return;
+    if (!root || !evaluation?.activePromotion) return;
     if (badge) badge.remove();
 
     const promo = evaluation.activePromotion;
@@ -356,7 +518,7 @@ function createUiController({ window, document, config, evaluation, log }) {
     `;
     badge
       .querySelector(".aarla-promo-badge__open")
-      ?.addEventListener("click", () => openPopup({ fromBadge: true }));
+      ?.addEventListener("click", () => openPopup());
     badge
       .querySelector(".aarla-promo-badge__dismiss")
       ?.addEventListener("click", () => {
@@ -368,7 +530,7 @@ function createUiController({ window, document, config, evaluation, log }) {
   }
 
   function showBadge() {
-    if (!badge || !config.global.showReminderBadge) return;
+    if (!badge || !config.global.showReminderBadge || !evaluation) return;
     if (evaluation.state.badgeDismissed) return;
     if (isPromotionExpired(evaluation.state)) {
       hideBadge();
@@ -381,11 +543,8 @@ function createUiController({ window, document, config, evaluation, log }) {
     if (badge) badge.hidden = true;
   }
 
-  /**
-   * @param {{ fromBadge?: boolean }} [_options]
-   */
-  function openPopup(_options = {}) {
-    if (!root || !evaluation.activePromotion || isOpen) return;
+  function openPopup() {
+    if (!root || !evaluation?.activePromotion || isOpen) return;
 
     const promo = evaluation.activePromotion;
     previouslyFocused = document.activeElement;
@@ -395,8 +554,8 @@ function createUiController({ window, document, config, evaluation, log }) {
       ? String(promo.discountCode).trim()
       : "";
     const ctaHref = code
-      ? buildDiscountUrl(code, promo.ctaDestination || "/")
-      : promo.ctaDestination || "/";
+      ? buildDiscountUrl(code, getCtaUrl(promo))
+      : getCtaUrl(promo);
     const ctaLabel = code
       ? promo.ctaText || config.i18n?.apply_and_shop || "Apply and shop"
       : promo.ctaText || "Shop";
@@ -477,7 +636,7 @@ function createUiController({ window, document, config, evaluation, log }) {
    * @param {{ dismissed?: boolean }} [options]
    */
   function closePopup(options = {}) {
-    if (!isOpen || !root) return;
+    if (!isOpen || !root || !evaluation) return;
     const overlay = root.querySelector(".aarla-promo-overlay");
     overlay?.remove();
     dialog = null;
@@ -549,12 +708,13 @@ function createUiController({ window, document, config, evaluation, log }) {
   }
 
   return {
+    start,
     mount,
     openPopup,
     closePopup,
     destroy,
-    getState: () => evaluation.state,
-    getActivePromotion: () => evaluation.activePromotion,
+    getState: () => evaluation?.state || null,
+    getActivePromotion: () => evaluation?.activePromotion || null,
   };
 }
 

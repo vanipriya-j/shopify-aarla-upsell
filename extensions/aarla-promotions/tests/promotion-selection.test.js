@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   activatePromotion,
   buildDiscountUrl,
   clearActivePromotion,
   createVisitorState,
+  filterScheduledPromotions,
   hasDiscountCode,
   isFirstTimeVisitor,
+  matchesCollectionInCart,
   matchesLandingPage,
+  matchesProductInCart,
+  matchesProductView,
   matchesUtm,
   readUtmParams,
   resolveActivePromotion,
@@ -19,37 +23,46 @@ import {
   readVisitorState,
   writeVisitorState,
 } from "../src/storage.js";
-import { evaluatePromotionsForVisit } from "../src/storefront.js";
+import {
+  evaluatePromotionsForVisit,
+  fetchActivePromotions,
+} from "../src/storefront.js";
 
 /**
- * @param {Partial<import('../src/engine.js').PromotionConfig> & { key: import('../src/engine.js').PromotionKey }} overrides
+ * @param {Partial<import('../src/engine.js').PromotionConfig> & { id: string }} overrides
  * @returns {import('../src/engine.js').PromotionConfig}
  */
 function promo(overrides) {
   return {
     enabled: true,
     priority: 10,
+    audienceType: "FIRST_VISIT",
     headline: "Headline",
     message: "Message",
     discountCode: "CODE",
     ctaText: "Shop",
-    ctaDestination: "/collections/all",
+    ctaUrl: "/collections/all",
     validityHours: 24,
     showOnce: false,
     dismissalSuppressionHours: 24,
+    targets: [],
     ...overrides,
   };
 }
 
 const welcome = promo({
+  id: "welcome",
   key: "welcome",
+  audienceType: "FIRST_VISIT",
   priority: 10,
   discountCode: "AARLA10",
   headline: "Welcome to Aarla",
 });
 
 const campaignA = promo({
+  id: "campaign_a",
   key: "campaign_a",
+  audienceType: "UTM_CAMPAIGN",
   priority: 100,
   utmSource: "meta",
   utmCampaign: "water_bottles",
@@ -58,7 +71,9 @@ const campaignA = promo({
 });
 
 const campaignB = promo({
+  id: "campaign_b",
   key: "campaign_b",
+  audienceType: "UTM_CAMPAIGN",
   priority: 90,
   utmSource: "meta",
   utmCampaign: "bottle_bags",
@@ -74,7 +89,7 @@ describe("selectPromotion", () => {
       currentPath: "/",
       isFirstTimeVisitor: true,
     });
-    expect(selected?.key).toBe("campaign_a");
+    expect(selected?.id).toBe("campaign_a");
   });
 
   it("picks the higher-priority campaign when both match UTM", () => {
@@ -92,7 +107,7 @@ describe("selectPromotion", () => {
       currentPath: "/",
       isFirstTimeVisitor: true,
     });
-    expect(selected?.key).toBe("campaign_a");
+    expect(selected?.id).toBe("campaign_a");
   });
 
   it("does not match a disabled promotion", () => {
@@ -102,7 +117,7 @@ describe("selectPromotion", () => {
       currentPath: "/",
       isFirstTimeVisitor: true,
     });
-    expect(selected?.key).toBe("welcome");
+    expect(selected?.id).toBe("welcome");
   });
 
   it("shows first-time welcome without campaign parameters", () => {
@@ -112,7 +127,7 @@ describe("selectPromotion", () => {
       currentPath: "/",
       isFirstTimeVisitor: true,
     });
-    expect(selected?.key).toBe("welcome");
+    expect(selected?.id).toBe("welcome");
   });
 
   it("does not give returning browsers the first-time welcome", () => {
@@ -127,9 +142,11 @@ describe("selectPromotion", () => {
 
   it("matches landing-page promotions when no UTM match exists", () => {
     const landing = promo({
+      id: "campaign_b",
       key: "campaign_b",
+      audienceType: "LANDING_PAGE",
       priority: 90,
-      landingPagePath: "/collections/water-bottles",
+      landingPath: "/collections/water-bottles",
       utmSource: "",
       utmCampaign: "",
     });
@@ -139,7 +156,7 @@ describe("selectPromotion", () => {
       currentPath: "/collections/water-bottles/",
       isFirstTimeVisitor: true,
     });
-    expect(selected?.key).toBe("campaign_b");
+    expect(selected?.id).toBe("campaign_b");
   });
 });
 
@@ -165,7 +182,12 @@ describe("UTM matching", () => {
   it("does not match when no UTM fields are configured", () => {
     expect(
       matchesUtm(
-        promo({ key: "campaign_a", utmSource: "", utmCampaign: "" }),
+        promo({
+          id: "campaign_a",
+          audienceType: "UTM_CAMPAIGN",
+          utmSource: "",
+          utmCampaign: "",
+        }),
         readUtmParams("?utm_source=meta"),
       ),
     ).toBe(false);
@@ -191,7 +213,7 @@ describe("active promotion persistence", () => {
     });
 
     expect(resolution.action).toBe("keep");
-    expect(resolution.promotion?.key).toBe("campaign_a");
+    expect(resolution.promotion?.id).toBe("campaign_a");
   });
 
   it("clears an expired promotion", () => {
@@ -227,7 +249,7 @@ describe("active promotion persistence", () => {
     });
 
     expect(resolution.action).toBe("replace");
-    expect(resolution.promotion?.key).toBe("campaign_a");
+    expect(resolution.promotion?.id).toBe("campaign_a");
 
     state = activatePromotion(
       state,
@@ -250,7 +272,7 @@ describe("active promotion persistence", () => {
       now: now + 1_000,
     });
     expect(resolution.action).toBe("keep");
-    expect(resolution.promotion?.key).toBe("campaign_a");
+    expect(resolution.promotion?.id).toBe("campaign_a");
   });
 });
 
@@ -309,7 +331,7 @@ describe("evaluatePromotionsForVisit", () => {
       pathname: "/",
       now: 1_700_000_000_000,
     });
-    expect(result.activePromotion?.key).toBe("welcome");
+    expect(result.activePromotion?.id).toBe("welcome");
     expect(isFirstTimeVisitor(null)).toBe(true);
     expect(readVisitorState(liveStorage)?.activePromotionKey).toBe("welcome");
   });
@@ -400,13 +422,14 @@ describe("evaluatePromotionsForVisit", () => {
     });
 
     expect(result.testMode).toBe(true);
-    expect(result.activePromotion?.key).toBe("campaign_a");
+    expect(result.activePromotion?.id).toBe("campaign_a");
     expect(readVisitorState(liveStorage)).toEqual(before);
   });
 
   it("hides code-related controls when discount code is empty", () => {
     const emptyCode = promo({
-      key: "campaign_a",
+      id: "campaign_a",
+      audienceType: "UTM_CAMPAIGN",
       priority: 100,
       utmSource: "meta",
       utmCampaign: "water_bottles",
@@ -430,11 +453,256 @@ describe("landing page helpers", () => {
     expect(
       matchesLandingPage(
         promo({
-          key: "campaign_a",
-          landingPagePath: "collections/water-bottles",
+          id: "campaign_a",
+          audienceType: "LANDING_PAGE",
+          landingPath: "collections/water-bottles",
         }),
         "/collections/water-bottles/",
       ),
     ).toBe(true);
+  });
+});
+
+describe("product and cart matching", () => {
+  it("matches product-view promotions by product or variant targets", () => {
+    const productPromo = promo({
+      id: "pv1",
+      audienceType: "PRODUCT_VIEW",
+      priority: 80,
+      targets: [
+        {
+          targetType: "QUALIFYING_PRODUCT",
+          shopifyResourceId: "gid://shopify/Product/111",
+        },
+      ],
+    });
+    expect(
+      matchesProductView(productPromo, "gid://shopify/Product/111", null),
+    ).toBe(true);
+    expect(matchesProductView(productPromo, "111", null)).toBe(true);
+    expect(
+      matchesProductView(productPromo, "gid://shopify/Product/999", null),
+    ).toBe(false);
+
+    const selected = selectPromotion({
+      promotions: [welcome, productPromo],
+      utm: {},
+      currentPath: "/products/bottle",
+      isFirstTimeVisitor: true,
+      productId: "gid://shopify/Product/111",
+    });
+    expect(selected?.id).toBe("pv1");
+  });
+
+  it("matches product-in-cart using Ajax cart line items", () => {
+    const cartPromo = promo({
+      id: "cart1",
+      audienceType: "PRODUCT_IN_CART",
+      priority: 85,
+      targets: [
+        {
+          targetType: "QUALIFYING_PRODUCT",
+          shopifyResourceId: "gid://shopify/Product/222",
+        },
+      ],
+    });
+    expect(
+      matchesProductInCart(cartPromo, [
+        { product_id: 222, variant_id: 1, final_line_price: 2000 },
+      ]),
+    ).toBe(true);
+    expect(
+      matchesProductInCart(cartPromo, [
+        { product_id: 999, variant_id: 1, final_line_price: 2000 },
+      ]),
+    ).toBe(false);
+  });
+
+  it("matches collection-in-cart via expanded qualifying product IDs", () => {
+    const collectionPromo = promo({
+      id: "col1",
+      audienceType: "COLLECTION_IN_CART",
+      priority: 70,
+      targets: [
+        {
+          targetType: "QUALIFYING_COLLECTION",
+          shopifyResourceId: "gid://shopify/Collection/1",
+        },
+        {
+          targetType: "QUALIFYING_PRODUCT",
+          shopifyResourceId: "gid://shopify/Product/333",
+        },
+      ],
+    });
+    expect(
+      matchesCollectionInCart(collectionPromo, [{ product_id: 333 }]),
+    ).toBe(true);
+  });
+});
+
+describe("unlimited campaigns and priority", () => {
+  it("supports multiple / unlimited campaign records with priority resolution", () => {
+    const many = Array.from({ length: 25 }, (_, index) =>
+      promo({
+        id: `utm_${index}`,
+        audienceType: "UTM_CAMPAIGN",
+        priority: index,
+        utmSource: "meta",
+        utmCampaign: "shared",
+      }),
+    );
+    const selected = selectPromotion({
+      promotions: many,
+      utm: readUtmParams("?utm_source=meta&utm_campaign=shared"),
+      currentPath: "/",
+      isFirstTimeVisitor: true,
+    });
+    expect(selected?.id).toBe("utm_24");
+  });
+
+  it("prefers UTM over landing over product context over returning over first visit", () => {
+    const promotions = [
+      promo({
+        id: "first",
+        audienceType: "FIRST_VISIT",
+        priority: 999,
+      }),
+      promo({
+        id: "returning",
+        audienceType: "RETURNING_VISITOR",
+        priority: 999,
+      }),
+      promo({
+        id: "product",
+        audienceType: "PRODUCT_VIEW",
+        priority: 999,
+        targets: [
+          {
+            targetType: "QUALIFYING_PRODUCT",
+            shopifyResourceId: "gid://shopify/Product/1",
+          },
+        ],
+      }),
+      promo({
+        id: "landing",
+        audienceType: "LANDING_PAGE",
+        priority: 999,
+        landingPath: "/collections/all",
+      }),
+      promo({
+        id: "utm",
+        audienceType: "UTM_CAMPAIGN",
+        priority: 1,
+        utmSource: "meta",
+        utmCampaign: "x",
+      }),
+    ];
+
+    expect(
+      selectPromotion({
+        promotions,
+        utm: readUtmParams("?utm_source=meta&utm_campaign=x"),
+        currentPath: "/collections/all",
+        isFirstTimeVisitor: true,
+        productId: "gid://shopify/Product/1",
+      })?.id,
+    ).toBe("utm");
+
+    expect(
+      selectPromotion({
+        promotions: promotions.filter((p) => p.id !== "utm"),
+        utm: {},
+        currentPath: "/collections/all",
+        isFirstTimeVisitor: false,
+        isReturningVisitor: true,
+        productId: "gid://shopify/Product/1",
+      })?.id,
+    ).toBe("landing");
+  });
+});
+
+describe("schedule and API fallback", () => {
+  it("excludes scheduled promotions outside their window", () => {
+    const now = Date.parse("2026-07-01T12:00:00Z");
+    const future = promo({
+      id: "future",
+      audienceType: "FIRST_VISIT",
+      enabled: true,
+      startsAt: "2026-08-01T00:00:00Z",
+    });
+    const past = promo({
+      id: "past",
+      audienceType: "FIRST_VISIT",
+      enabled: true,
+      endsAt: "2026-06-01T00:00:00Z",
+    });
+    const active = promo({
+      id: "active",
+      audienceType: "FIRST_VISIT",
+      enabled: true,
+      startsAt: "2026-06-01T00:00:00Z",
+      endsAt: "2026-08-01T00:00:00Z",
+    });
+    const filtered = filterScheduledPromotions([future, past, active], now);
+    expect(filtered.map((p) => p.id)).toEqual(["active"]);
+  });
+
+  it("returns an empty list when the promotions API fails", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    await expect(
+      fetchActivePromotions("/apps/aarla-promotions/active", fetchImpl),
+    ).resolves.toEqual([]);
+  });
+
+  it("returns an empty list when the promotions API is unavailable", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: false,
+      status: 502,
+      json: async () => ({}),
+    }));
+    await expect(
+      fetchActivePromotions("/apps/aarla-promotions/active", fetchImpl),
+    ).resolves.toEqual([]);
+  });
+
+  it("enforces one active promotion even with many matches available", () => {
+    const liveStorage = createMemoryStorage();
+    const many = [
+      campaignA,
+      campaignB,
+      welcome,
+      promo({
+        id: "extra",
+        audienceType: "UTM_CAMPAIGN",
+        priority: 50,
+        utmSource: "meta",
+        utmCampaign: "water_bottles",
+      }),
+    ];
+    const result = evaluatePromotionsForVisit({
+      config: {
+        global: {
+          enabled: true,
+          testMode: false,
+          testPreview: "automatic",
+          popupDelayMs: 0,
+          popupPosition: "center",
+          popupMaxWidth: 420,
+          overlayOpacity: 0.45,
+          borderRadius: 12,
+          showReminderBadge: true,
+          debugLogging: false,
+        },
+        promotions: many,
+      },
+      liveStorage,
+      search: "?utm_source=meta&utm_campaign=water_bottles",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(result.state.activePromotionKey).toBe("campaign_a");
+    expect(result.activePromotion?.discountCode).toBe("CAMPAIGNA");
   });
 });

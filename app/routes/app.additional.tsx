@@ -10,24 +10,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function SetupGuide() {
   return (
     <s-page heading="Setup guide">
-      <s-section heading="Theme editor">
+      <s-section heading="1. Create promotions">
         <s-paragraph>
-          Configure Aarla Promotions under Online Store → Themes → Customize →
-          App embeds. Use Test mode to preview an enabled promotion without
-          writing to live visitor localStorage.
+          Use the Promotions page to create unlimited database-backed campaigns.
+          Enter the Shopify discount code on each promotion — this app never
+          creates or validates discounts.
         </s-paragraph>
       </s-section>
-      <s-section heading="Discount codes">
+      <s-section heading="2. Enable the theme embed">
         <s-paragraph>
-          Create discount codes in Shopify Admin → Discounts. Enter the same
-          code in the matching app embed setting. Leave the code blank to hide
-          code display and Copy Code controls.
+          Online Store → Themes → Customize → App embeds → enable{" "}
+          <s-text type="strong">Aarla Promotions</s-text>. Only global
+          appearance settings live in the theme editor.
         </s-paragraph>
       </s-section>
-      <s-section heading="Apply and Shop URL">
+      <s-section heading="3. App proxy">
         <s-paragraph>
-          When a code is configured, the CTA uses Shopify&apos;s discount URL
-          pattern: /discount/CODE?redirect=/desired-path
+          The storefront loads active promotions from{" "}
+          <code>/apps/aarla-promotions/active</code> after page load. If the
+          endpoint is unavailable, no popup is shown and the storefront
+          continues normally.
         </s-paragraph>
       </s-section>
     </s-page>

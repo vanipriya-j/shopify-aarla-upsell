@@ -2,6 +2,18 @@
 (() => {
   // extensions/aarla-promotions/src/engine.js
   var STORAGE_NAMESPACE = "aarla_promotions";
+  var AUDIENCE_MATCH_ORDER = (
+    /** @type {const} */
+    [
+      "UTM_CAMPAIGN",
+      "LANDING_PAGE",
+      "PRODUCT_VIEW",
+      "PRODUCT_IN_CART",
+      "COLLECTION_IN_CART",
+      "RETURNING_VISITOR",
+      "FIRST_VISIT"
+    ]
+  );
   function normalizeMatchValue(value) {
     if (value == null) return "";
     return String(value).trim().toLowerCase();
@@ -21,6 +33,23 @@
       normalized = normalized.slice(0, -1);
     }
     return normalized.toLowerCase();
+  }
+  function normalizeResourceId(value) {
+    if (value == null || value === "") return "";
+    const raw = String(value).trim();
+    if (!raw) return "";
+    const lower = raw.toLowerCase();
+    if (lower.startsWith("gid://")) return lower;
+    return lower;
+  }
+  function resourceIdsMatch(a, b) {
+    const left = normalizeResourceId(a);
+    const right = normalizeResourceId(b);
+    if (!left || !right) return false;
+    if (left === right) return true;
+    const leftNum = left.includes("/") ? left.split("/").pop() : left;
+    const rightNum = right.includes("/") ? right.split("/").pop() : right;
+    return Boolean(leftNum && rightNum && leftNum === rightNum);
   }
   function readUtmParams(search) {
     let params;
@@ -44,6 +73,15 @@
       utm_term: params.get("utm_term") || void 0
     };
   }
+  function getPromotionId(promotion) {
+    return promotion.id || promotion.key || "";
+  }
+  function getCtaUrl(promotion) {
+    return promotion.ctaUrl || promotion.ctaDestination || "/";
+  }
+  function getLandingPath(promotion) {
+    return promotion.landingPath || promotion.landingPagePath || "";
+  }
   function matchesUtm(promotion, utm) {
     const pairs = [
       ["utm_source", promotion.utmSource],
@@ -60,36 +98,145 @@
     });
   }
   function matchesLandingPage(promotion, currentPath) {
-    const expected = normalizePath(promotion.landingPagePath);
+    const expected = normalizePath(getLandingPath(promotion));
     if (!expected) return false;
     return normalizePath(currentPath) === expected;
   }
   function sortByPriorityDesc(promotions) {
     return [...promotions].sort((a, b) => {
       if (b.priority !== a.priority) return b.priority - a.priority;
-      return a.key.localeCompare(b.key);
+      return getPromotionId(a).localeCompare(getPromotionId(b));
     });
   }
   function isCampaignPromotion(promotion) {
-    return promotion.key === "campaign_a" || promotion.key === "campaign_b";
+    const type = inferAudienceType(promotion);
+    return type === "UTM_CAMPAIGN" || type === "LANDING_PAGE" || type === "PRODUCT_VIEW" || type === "PRODUCT_IN_CART" || type === "COLLECTION_IN_CART";
+  }
+  function inferAudienceType(promotion) {
+    if (promotion.audienceType) return promotion.audienceType;
+    const key = promotion.key || promotion.id;
+    if (key === "welcome") return "FIRST_VISIT";
+    if (getLandingPath(promotion) && !promotion.utmSource && !promotion.utmCampaign) {
+      return "LANDING_PAGE";
+    }
+    if (promotion.utmSource || promotion.utmCampaign || promotion.utmMedium) {
+      return "UTM_CAMPAIGN";
+    }
+    if (key === "campaign_a" || key === "campaign_b") return "UTM_CAMPAIGN";
+    return "FIRST_VISIT";
+  }
+  function matchesProductView(promotion, productId, variantId) {
+    const targets = promotion.targets || [];
+    if (!targets.length) return false;
+    if (productId) {
+      const productHit = targets.some(
+        (t) => (t.targetType === "QUALIFYING_PRODUCT" || t.targetType === "PROMOTED_PRODUCT") && resourceIdsMatch(t.shopifyResourceId, productId)
+      );
+      if (productHit) return true;
+    }
+    if (variantId) {
+      return targets.some(
+        (t) => (t.targetType === "QUALIFYING_VARIANT" || t.targetType === "PROMOTED_VARIANT") && resourceIdsMatch(t.shopifyResourceId, variantId)
+      );
+    }
+    return false;
+  }
+  function matchesProductInCart(promotion, cartItems = [], cartTotal = 0) {
+    const targets = promotion.targets || [];
+    if (!targets.length) return false;
+    const min = promotion.minimumCartValue;
+    if (min != null && Number(min) > 0) {
+      const normalizedCartTotal = normalizeCartTotal(cartTotal, cartItems);
+      if (normalizedCartTotal < Number(min)) return false;
+    }
+    return cartItems.some((item) => {
+      const productId = String(item.product_gid || item.product_id || "");
+      const variantId = String(item.variant_gid || item.variant_id || "");
+      return targets.some((t) => {
+        if (t.targetType === "QUALIFYING_PRODUCT" && resourceIdsMatch(t.shopifyResourceId, productId)) {
+          return true;
+        }
+        if (t.targetType === "QUALIFYING_VARIANT" && resourceIdsMatch(t.shopifyResourceId, variantId)) {
+          return true;
+        }
+        return false;
+      });
+    });
+  }
+  function matchesCollectionInCart(promotion, cartItems = [], cartTotal = 0) {
+    return matchesProductInCart(promotion, cartItems, cartTotal);
+  }
+  function normalizeCartTotal(cartTotal, cartItems) {
+    if (!Number.isFinite(cartTotal)) return 0;
+    if (cartTotal >= 1e3 || cartItems.some((i) => (i.final_line_price || 0) >= 100)) {
+      return cartTotal / 100;
+    }
+    return cartTotal;
+  }
+  function promotionMatchesContext(promotion, context) {
+    if (!promotion.enabled) return false;
+    const type = inferAudienceType(promotion);
+    switch (type) {
+      case "UTM_CAMPAIGN":
+        return matchesUtm(promotion, context.utm);
+      case "LANDING_PAGE":
+        return matchesLandingPage(promotion, context.currentPath);
+      case "PRODUCT_VIEW":
+        return matchesProductView(
+          promotion,
+          context.productId,
+          context.variantId
+        );
+      case "PRODUCT_IN_CART":
+        return matchesProductInCart(
+          promotion,
+          context.cartItems || [],
+          context.cartTotal || 0
+        );
+      case "COLLECTION_IN_CART":
+        return matchesCollectionInCart(
+          promotion,
+          context.cartItems || [],
+          context.cartTotal || 0
+        );
+      case "RETURNING_VISITOR":
+        return Boolean(context.isReturningVisitor) && !context.isFirstTimeVisitor;
+      case "FIRST_VISIT":
+        return Boolean(context.isFirstTimeVisitor);
+      default:
+        return false;
+    }
   }
   function selectPromotion({
     promotions,
     utm,
     currentPath,
-    isFirstTimeVisitor: isFirstTimeVisitor2
+    isFirstTimeVisitor: isFirstTimeVisitor2,
+    isReturningVisitor,
+    productId = null,
+    variantId = null,
+    cartItems = [],
+    cartTotal = 0
   }) {
+    const context = {
+      utm,
+      currentPath,
+      isFirstTimeVisitor: isFirstTimeVisitor2,
+      isReturningVisitor: isReturningVisitor != null ? isReturningVisitor : !isFirstTimeVisitor2,
+      productId,
+      variantId,
+      cartItems,
+      cartTotal
+    };
     const enabled = promotions.filter((promo) => promo.enabled);
-    const campaigns = sortByPriorityDesc(enabled.filter(isCampaignPromotion));
-    const utmMatch = campaigns.find((promo) => matchesUtm(promo, utm));
-    if (utmMatch) return utmMatch;
-    const landingMatch = campaigns.find(
-      (promo) => matchesLandingPage(promo, currentPath)
-    );
-    if (landingMatch) return landingMatch;
-    if (isFirstTimeVisitor2) {
-      const welcome = enabled.find((promo) => promo.key === "welcome");
-      if (welcome) return welcome;
+    for (const audienceType of AUDIENCE_MATCH_ORDER) {
+      const candidates = sortByPriorityDesc(
+        enabled.filter((promo) => inferAudienceType(promo) === audienceType)
+      );
+      const match = candidates.find(
+        (promo) => promotionMatchesContext(promo, context)
+      );
+      if (match) return match;
     }
     return null;
   }
@@ -105,7 +252,9 @@
     now = Date.now()
   }) {
     const expired = isPromotionExpired(state, now);
-    const active = !expired && state.activePromotionKey ? promotions.find((promo) => promo.key === state.activePromotionKey) || null : null;
+    const active = !expired && state.activePromotionKey ? promotions.find(
+      (promo) => getPromotionId(promo) === state.activePromotionKey
+    ) || null : null;
     if (!active) {
       if (candidate) return { action: "activate", promotion: candidate };
       if (state.activePromotionKey && expired) {
@@ -116,10 +265,10 @@
     if (!candidate) {
       return { action: "keep", promotion: active };
     }
-    if (candidate.key === active.key) {
+    if (getPromotionId(candidate) === getPromotionId(active)) {
       return { action: "keep", promotion: active };
     }
-    if (candidate.key === "welcome" && isCampaignPromotion(active)) {
+    if (inferAudienceType(candidate) === "FIRST_VISIT" && isCampaignPromotion(active)) {
       return { action: "keep", promotion: active };
     }
     if (isCampaignPromotion(candidate) && isCampaignPromotion(active)) {
@@ -128,16 +277,20 @@
       }
       return { action: "keep", promotion: active };
     }
-    if (isCampaignPromotion(candidate) && active.key === "welcome") {
+    if (isCampaignPromotion(candidate) && inferAudienceType(active) === "FIRST_VISIT") {
+      return { action: "replace", promotion: candidate };
+    }
+    if (candidate.priority > active.priority) {
       return { action: "replace", promotion: candidate };
     }
     return { action: "keep", promotion: active };
   }
   function shouldSuppressPopup(state, promotion, now = Date.now()) {
-    if (state.activePromotionKey === promotion.key && promotion.showOnce && state.popupViewed) {
+    const id = getPromotionId(promotion);
+    if (state.activePromotionKey === id && promotion.showOnce && state.popupViewed) {
       return true;
     }
-    if (state.activePromotionKey === promotion.key && state.popupDismissed && state.popupDismissedAt != null) {
+    if (state.activePromotionKey === id && state.popupDismissed && state.popupDismissedAt != null) {
       const suppressMs = Math.max(0, promotion.dismissalSuppressionHours) * 60 * 60 * 1e3;
       if (now < state.popupDismissedAt + suppressMs) {
         return true;
@@ -192,7 +345,7 @@
     const validityHours = Math.max(0, Number(promotion.validityHours) || 0);
     return {
       ...state,
-      activePromotionKey: promotion.key,
+      activePromotionKey: getPromotionId(promotion),
       activeDiscountCode: hasDiscountCode(promotion.discountCode) ? String(promotion.discountCode).trim() : null,
       promotionActivatedAt: now,
       promotionExpiresAt: now + validityHours * 60 * 60 * 1e3,
@@ -204,6 +357,34 @@
   }
   function isFirstTimeVisitor(state) {
     return state == null;
+  }
+  function filterScheduledPromotions(promotions, now = Date.now()) {
+    return promotions.filter((promo) => {
+      if (!promo.enabled) return false;
+      const startsAt = (
+        /** @type {{ startsAt?: unknown }} */
+        promo.startsAt
+      );
+      const endsAt = (
+        /** @type {{ endsAt?: unknown }} */
+        promo.endsAt
+      );
+      if (startsAt) {
+        const start = new Date(
+          /** @type {string | number | Date} */
+          startsAt
+        ).getTime();
+        if (Number.isFinite(start) && now < start) return false;
+      }
+      if (endsAt) {
+        const end = new Date(
+          /** @type {string | number | Date} */
+          endsAt
+        ).getTime();
+        if (Number.isFinite(end) && now > end) return false;
+      }
+      return true;
+    });
   }
 
   // extensions/aarla-promotions/src/storage.js
@@ -321,8 +502,11 @@
         if (parsed.global) global = { ...global, ...parsed.global };
         if (Array.isArray(parsed.promotions)) {
           for (const promo of parsed.promotions) {
-            if (!promo || !promo.key) continue;
-            const index = promotions.findIndex((item) => item.key === promo.key);
+            if (!promo || !(promo.id || promo.key)) continue;
+            const id = promo.id || promo.key;
+            const index = promotions.findIndex(
+              (item) => getPromotionId(item) === id
+            );
             if (index >= 0)
               promotions[index] = { ...promotions[index], ...promo };
             else promotions.push(promo);
@@ -332,30 +516,23 @@
       } catch (e) {
       }
     }
-    if (!promotions.some((promo) => promo.key === "welcome")) {
-    }
     return {
       global: {
         enabled: Boolean(global.enabled),
         testMode: Boolean(global.testMode),
-        testPreview: normalizePreview(global.testPreview),
+        testPreview: global.testPreview || "automatic",
         popupDelayMs: Number(global.popupDelayMs) || 0,
         popupPosition: normalizePosition(global.popupPosition),
         popupMaxWidth: Number(global.popupMaxWidth) || 420,
         overlayOpacity: clamp(Number(global.overlayOpacity) || 0.45, 0, 1),
         borderRadius: Number.isFinite(Number(global.borderRadius)) ? Number(global.borderRadius) : 12,
         showReminderBadge: Boolean(global.showReminderBadge),
-        debugLogging: Boolean(global.debugLogging)
+        debugLogging: Boolean(global.debugLogging),
+        apiEndpoint: global.apiEndpoint || "/apps/aarla-promotions/active"
       },
       promotions,
       i18n
     };
-  }
-  function normalizePreview(value) {
-    if (value === "welcome" || value === "campaign_a" || value === "campaign_b" || value === "automatic") {
-      return value;
-    }
-    return "automatic";
   }
   function normalizePosition(value) {
     if (value === "bottom-left" || value === "bottom-right" || value === "center") {
@@ -366,13 +543,92 @@
   function clamp(value, min, max) {
     return Math.min(max, Math.max(min, value));
   }
+  async function fetchActivePromotions(endpoint, fetchImpl = globalThis.fetch) {
+    if (!endpoint || typeof fetchImpl !== "function") return [];
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      if (!data || !Array.isArray(data.promotions)) return [];
+      return data.promotions.map(normalizeFetchedPromotion);
+    } catch (e) {
+      return [];
+    }
+  }
+  function normalizeFetchedPromotion(promo) {
+    return {
+      id: String(promo.id || ""),
+      enabled: promo.enabled !== false,
+      priority: Number(promo.priority) || 0,
+      audienceType: String(promo.audienceType || "FIRST_VISIT"),
+      displayType: String(promo.displayType || "POPUP"),
+      headline: String(promo.headline || ""),
+      message: String(promo.message || ""),
+      discountCode: String(promo.discountCode || ""),
+      ctaText: String(promo.ctaText || ""),
+      ctaUrl: String(promo.ctaUrl || promo.ctaDestination || "/"),
+      popupDelayMs: Number(promo.popupDelayMs) || 0,
+      validityHours: Number(promo.validityHours) || 24,
+      showOnce: Boolean(promo.showOnce),
+      dismissalSuppressionHours: Number(promo.dismissalSuppressionHours) || 24,
+      utmSource: promo.utmSource ? String(promo.utmSource) : void 0,
+      utmMedium: promo.utmMedium ? String(promo.utmMedium) : void 0,
+      utmCampaign: promo.utmCampaign ? String(promo.utmCampaign) : void 0,
+      utmContent: promo.utmContent ? String(promo.utmContent) : void 0,
+      landingPath: promo.landingPath ? String(promo.landingPath) : promo.landingPagePath ? String(promo.landingPagePath) : void 0,
+      minimumCartValue: promo.minimumCartValue == null ? null : Number(promo.minimumCartValue),
+      targets: Array.isArray(promo.targets) ? promo.targets.map((t) => ({
+        targetType: String(t.targetType || ""),
+        shopifyResourceId: String(t.shopifyResourceId || "")
+      })) : [],
+      startsAt: promo.startsAt,
+      endsAt: promo.endsAt
+    };
+  }
+  function readProductContext(window2) {
+    var _a;
+    const meta = window2.meta || ((_a = window2.ShopifyAnalytics) == null ? void 0 : _a.meta) || null;
+    const product = meta == null ? void 0 : meta.product;
+    if (!product) {
+      return { productId: null, variantId: null };
+    }
+    return {
+      productId: product.gid || (product.id != null ? String(product.id) : null),
+      variantId: product.selectedVariantGid || (product.variants && product.variants[0] ? String(product.variants[0].id) : null)
+    };
+  }
+  async function fetchCart(fetchImpl = globalThis.fetch) {
+    try {
+      const response = await fetchImpl("/cart.js", {
+        headers: { Accept: "application/json" },
+        credentials: "same-origin"
+      });
+      if (!response.ok) return { items: [], total_price: 0 };
+      const cart = await response.json();
+      return {
+        items: Array.isArray(cart.items) ? cart.items : [],
+        total_price: Number(cart.total_price) || 0
+      };
+    } catch (e) {
+      return { items: [], total_price: 0 };
+    }
+  }
   function evaluatePromotionsForVisit({
     config,
+    promotions: promotionsInput,
     liveStorage,
     search,
     pathname,
     now = Date.now(),
-    testStorage
+    testStorage,
+    productId = null,
+    variantId = null,
+    cartItems = [],
+    cartTotal = 0
   }) {
     const testMode = Boolean(config.global.testMode);
     const storage = testMode ? testStorage || createMemoryStorage() : liveStorage;
@@ -394,23 +650,38 @@
       state = clearActivePromotion(state);
       writeVisitorState(storage, state);
     }
+    const sourcePromotions = promotionsInput || config.promotions || /** @type {import('./engine.js').PromotionConfig[]} */
+    [];
+    const promotions = filterScheduledPromotions(sourcePromotions, now).map(
+      (promo) => ({
+        ...promo,
+        enabled: promo.enabled !== false,
+        ctaUrl: getCtaUrl(promo),
+        id: getPromotionId(promo)
+      })
+    );
     let candidate = null;
     if (testMode && config.global.testPreview !== "automatic") {
-      candidate = config.promotions.find(
-        (promo) => promo.enabled && promo.key === config.global.testPreview
+      candidate = promotions.find(
+        (promo) => promo.enabled && getPromotionId(promo) === config.global.testPreview
       ) || null;
     } else {
       candidate = selectPromotion({
-        promotions: config.promotions,
+        promotions,
         utm,
         currentPath: pathname,
-        isFirstTimeVisitor: isFirstVisit || testMode && config.global.testPreview === "automatic"
+        isFirstTimeVisitor: isFirstVisit || testMode && config.global.testPreview === "automatic",
+        isReturningVisitor: !isFirstVisit,
+        productId,
+        variantId,
+        cartItems,
+        cartTotal
       });
     }
     const resolution = resolveActivePromotion({
       candidate,
       state,
-      promotions: config.promotions,
+      promotions,
       now
     });
     if (resolution.action === "clear") {
@@ -419,10 +690,11 @@
       state = activatePromotion(state, resolution.promotion, now);
     }
     writeVisitorState(storage, state);
-    const activePromotion = state.activePromotionKey ? config.promotions.find(
-      (promo) => promo.key === state.activePromotionKey
+    const activePromotion = state.activePromotionKey ? promotions.find(
+      (promo) => getPromotionId(promo) === state.activePromotionKey
     ) || null : null;
     const suppressPopup = activePromotion ? shouldSuppressPopup(state, activePromotion, now) && !testMode : true;
+    const delayMs = activePromotion ? Number(activePromotion.popupDelayMs) || Number(config.global.popupDelayMs) || 0 : 0;
     return {
       testMode,
       storage,
@@ -430,14 +702,14 @@
       activePromotion,
       suppressPopup,
       liveSnapshot,
+      delayMs,
       discountUrl: activePromotion && hasDiscountCode(activePromotion.discountCode) ? buildDiscountUrl(
         activePromotion.discountCode,
-        activePromotion.ctaDestination || "/"
+        getCtaUrl(activePromotion)
       ) : null
     };
   }
   function initAarlaPromotions(window2) {
-    var _a;
     const document2 = window2.document;
     const config = loadConfigFromDocument(document2);
     if (!config || !config.global.enabled) return null;
@@ -446,39 +718,64 @@
         console.info("[Aarla Promotions]", ...args);
       }
     };
-    const evaluation = evaluatePromotionsForVisit({
-      config,
-      liveStorage: window2.localStorage,
-      search: window2.location.search,
-      pathname: window2.location.pathname
-    });
-    log("evaluation", {
-      active: ((_a = evaluation.activePromotion) == null ? void 0 : _a.key) || null,
-      suppressPopup: evaluation.suppressPopup,
-      testMode: evaluation.testMode
-    });
     const controller = createUiController({
       window: window2,
       document: document2,
       config,
-      evaluation,
       log
     });
-    controller.mount();
+    void controller.start();
     return controller;
   }
-  function createUiController({ window: window2, document: document2, config, evaluation, log }) {
+  function createUiController({ window: window2, document: document2, config, log }) {
     let root = null;
     let dialog = null;
     let badge = null;
     let previouslyFocused = null;
     let openTimer = null;
     let isOpen = false;
+    let evaluation = null;
     const reducedMotion = window2.matchMedia ? window2.matchMedia("(prefers-reduced-motion: reduce)").matches : false;
     function persist() {
+      if (!evaluation) return;
       writeVisitorState(evaluation.storage, evaluation.state);
     }
+    async function start() {
+      try {
+        const endpoint = config.global.apiEndpoint || "/apps/aarla-promotions/active";
+        const remotePromotions = await fetchActivePromotions(
+          endpoint,
+          window2.fetch.bind(window2)
+        );
+        if (!remotePromotions.length && !(config.promotions || []).length) {
+          log("no promotions available");
+          return;
+        }
+        const product = readProductContext(window2);
+        const cart = await fetchCart(window2.fetch.bind(window2));
+        evaluation = evaluatePromotionsForVisit({
+          config,
+          promotions: remotePromotions.length ? remotePromotions : config.promotions || [],
+          liveStorage: window2.localStorage,
+          search: window2.location.search,
+          pathname: window2.location.pathname,
+          productId: product.productId,
+          variantId: product.variantId,
+          cartItems: cart.items,
+          cartTotal: cart.total_price
+        });
+        log("evaluation", {
+          active: evaluation.activePromotion ? getPromotionId(evaluation.activePromotion) : null,
+          suppressPopup: evaluation.suppressPopup,
+          testMode: evaluation.testMode
+        });
+        mount();
+      } catch (error) {
+        log("initialization failed silently", error);
+      }
+    }
     function mount() {
+      if (!(evaluation == null ? void 0 : evaluation.activePromotion)) return;
       if (document2.getElementById(ROOT_ID)) return;
       root = document2.createElement("div");
       root.id = ROOT_ID;
@@ -498,13 +795,9 @@
       );
       if (reducedMotion) root.classList.add("aarla-promo-root--reduced-motion");
       document2.body.appendChild(root);
-      if (!evaluation.activePromotion) {
-        log("no active promotion");
-        return;
-      }
       renderBadge();
       if (!evaluation.suppressPopup) {
-        const delay = Math.max(0, config.global.popupDelayMs || 0);
+        const delay = Math.max(0, evaluation.delayMs || 0);
         openTimer = window2.setTimeout(() => openPopup(), delay);
       } else if (config.global.showReminderBadge && !evaluation.state.badgeDismissed) {
         showBadge();
@@ -512,7 +805,7 @@
     }
     function renderBadge() {
       var _a, _b, _c, _d, _e;
-      if (!root || !evaluation.activePromotion) return;
+      if (!root || !(evaluation == null ? void 0 : evaluation.activePromotion)) return;
       if (badge) badge.remove();
       const promo = evaluation.activePromotion;
       const label = hasDiscountCode(promo.discountCode) ? (((_a = config.i18n) == null ? void 0 : _a.reminder_with_code) || "{{ code }} is active").replace(
@@ -528,7 +821,7 @@
         ((_c = config.i18n) == null ? void 0 : _c.dismiss_reminder) || "Dismiss offer reminder"
       )}">\xD7</button>
     `;
-      (_d = badge.querySelector(".aarla-promo-badge__open")) == null ? void 0 : _d.addEventListener("click", () => openPopup({ fromBadge: true }));
+      (_d = badge.querySelector(".aarla-promo-badge__open")) == null ? void 0 : _d.addEventListener("click", () => openPopup());
       (_e = badge.querySelector(".aarla-promo-badge__dismiss")) == null ? void 0 : _e.addEventListener("click", () => {
         evaluation.state.badgeDismissed = true;
         persist();
@@ -537,7 +830,7 @@
       root.appendChild(badge);
     }
     function showBadge() {
-      if (!badge || !config.global.showReminderBadge) return;
+      if (!badge || !config.global.showReminderBadge || !evaluation) return;
       if (evaluation.state.badgeDismissed) return;
       if (isPromotionExpired(evaluation.state)) {
         hideBadge();
@@ -548,14 +841,14 @@
     function hideBadge() {
       if (badge) badge.hidden = true;
     }
-    function openPopup(_options = {}) {
+    function openPopup() {
       var _a, _b, _c, _d;
-      if (!root || !evaluation.activePromotion || isOpen) return;
+      if (!root || !(evaluation == null ? void 0 : evaluation.activePromotion) || isOpen) return;
       const promo = evaluation.activePromotion;
       previouslyFocused = document2.activeElement;
       hideBadge();
       const code = hasDiscountCode(promo.discountCode) ? String(promo.discountCode).trim() : "";
-      const ctaHref = code ? buildDiscountUrl(code, promo.ctaDestination || "/") : promo.ctaDestination || "/";
+      const ctaHref = code ? buildDiscountUrl(code, getCtaUrl(promo)) : getCtaUrl(promo);
       const ctaLabel = code ? promo.ctaText || ((_a = config.i18n) == null ? void 0 : _a.apply_and_shop) || "Apply and shop" : promo.ctaText || "Shop";
       const overlay = document2.createElement("div");
       overlay.className = "aarla-promo-overlay";
@@ -616,7 +909,7 @@
       }, 0);
     }
     function closePopup(options = {}) {
-      if (!isOpen || !root) return;
+      if (!isOpen || !root || !evaluation) return;
       const overlay = root.querySelector(".aarla-promo-overlay");
       overlay == null ? void 0 : overlay.remove();
       dialog = null;
@@ -673,12 +966,13 @@
       root = null;
     }
     return {
+      start,
       mount,
       openPopup,
       closePopup,
       destroy,
-      getState: () => evaluation.state,
-      getActivePromotion: () => evaluation.activePromotion
+      getState: () => (evaluation == null ? void 0 : evaluation.state) || null,
+      getActivePromotion: () => (evaluation == null ? void 0 : evaluation.activePromotion) || null
     };
   }
   function escapeHtml(value) {
