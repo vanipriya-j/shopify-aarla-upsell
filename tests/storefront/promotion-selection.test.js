@@ -16,21 +16,21 @@ import {
   resolveActivePromotion,
   selectPromotion,
   shouldSuppressPopup,
-} from "../src/engine.js";
+} from "../../storefront-engine/engine.js";
 import {
   createMemoryStorage,
   ensureVisitorState,
   readVisitorState,
   writeVisitorState,
-} from "../src/storage.js";
+} from "../../storefront-engine/storage.js";
 import {
   evaluatePromotionsForVisit,
   fetchActivePromotions,
-} from "../src/storefront.js";
+} from "../../storefront-engine/storefront.js";
 
 /**
- * @param {Partial<import('../src/engine.js').PromotionConfig> & { id: string }} overrides
- * @returns {import('../src/engine.js').PromotionConfig}
+ * @param {Partial<import('../../storefront-engine/engine.js').PromotionConfig> & { id: string }} overrides
+ * @returns {import('../../storefront-engine/engine.js').PromotionConfig}
  */
 function promo(overrides) {
   return {
@@ -253,7 +253,7 @@ describe("active promotion persistence", () => {
 
     state = activatePromotion(
       state,
-      /** @type {import('../src/engine.js').PromotionConfig} */ (
+      /** @type {import('../../storefront-engine/engine.js').PromotionConfig} */ (
         resolution.promotion
       ),
       now + 1_000,
