@@ -46,6 +46,24 @@ export function shouldForceFirstVisit(search) {
 }
 
 /**
+ * Remove the force-first-visit flag from the address bar so a refresh does not
+ * keep clearing visitor markers (one-shot QA helper).
+ * @param {Window & typeof globalThis} [windowRef]
+ */
+export function consumeForceFirstVisitParam(windowRef = globalThis.window) {
+  try {
+    if (!windowRef?.location || !windowRef.history?.replaceState) return;
+    const url = new URL(windowRef.location.href);
+    if (!url.searchParams.has(FORCE_FIRST_VISIT_PARAM)) return;
+    url.searchParams.delete(FORCE_FIRST_VISIT_PARAM);
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    windowRef.history.replaceState(windowRef.history.state, "", next);
+  } catch {
+    // Ignore history API failures.
+  }
+}
+
+/**
  * @param {Document} document
  * @returns {import('./engine.js').AppConfig | null}
  */
@@ -269,7 +287,11 @@ export function evaluatePromotionsForVisit({
   const forceFirstVisit = shouldForceFirstVisit(search);
   if (forceFirstVisit && !testMode) {
     // Merchant QA helper: ?aarla_force_first_visit=1 clears visit markers.
+    // One-shot: strip the query param so refresh/navigation does not re-clear.
     clearVisitorState(liveStorage);
+    if (typeof globalThis !== "undefined" && globalThis.window) {
+      consumeForceFirstVisitParam(globalThis.window);
+    }
   }
 
   const liveSnapshot = liveStorage ? readVisitorState(liveStorage) : null;

@@ -612,12 +612,17 @@ export function shouldSuppressPopup(state, promotion, now = Date.now()) {
     ? state.viewedPromotionKeys
     : [];
 
-  // showOnce: suppress if this promotion's popup was already shown.
+  // Never reopen while this promotion is still active and was already shown.
+  // (Independent of showOnce — otherwise every navigation reopens the popup.)
   if (
-    promotion.showOnce &&
-    (viewedKeys.includes(id) ||
-      (state.activePromotionKey === id && state.popupViewed))
+    state.activePromotionKey === id &&
+    (state.popupViewed || viewedKeys.includes(id))
   ) {
+    return true;
+  }
+
+  // showOnce: suppress forever for this promotion id, even after expiry.
+  if (promotion.showOnce && viewedKeys.includes(id)) {
     return true;
   }
 

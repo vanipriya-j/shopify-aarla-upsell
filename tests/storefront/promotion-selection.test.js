@@ -21,6 +21,7 @@ import {
 } from "../../storefront-engine/engine.js";
 import {
   COOKIE_NAMESPACE,
+  VIEWED_COOKIE_NAMESPACE,
   clearVisitorState,
   createMemoryStorage,
   ensureVisitorState,
@@ -331,6 +332,20 @@ describe("discount helpers", () => {
 });
 
 describe("popup suppression", () => {
+  // Never reopen while this promotion is still active and was already shown.
+  it("suppresses reopen after viewing even when showOnce is off", () => {
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: false },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    expect(
+      shouldSuppressPopup(state, { ...welcome, showOnce: false }, now + 1000),
+    ).toBe(true);
+  });
+
   it("suppresses reopen when show once is enabled after viewing", () => {
     const now = 1_700_000_000_000;
     let state = activatePromotion(
@@ -931,6 +946,28 @@ describe("shouldForceFirstVisit", () => {
     expect(shouldForceFirstVisit("")).toBe(false);
     expect(shouldForceFirstVisit("?utm_source=meta")).toBe(false);
   });
+
+  it("strips the force param after one shot so refresh does not re-clear", async () => {
+    const { consumeForceFirstVisitParam } = await import(
+      "../../storefront-engine/storefront.js"
+    );
+    const replaced = [];
+    const fakeWindow = {
+      location: {
+        href: "https://aarla-dev.myshopify.com/?aarla_force_first_visit=1&preview_theme_id=1",
+      },
+      history: {
+        state: null,
+        replaceState(_state, _title, url) {
+          replaced.push(url);
+          fakeWindow.location.href = `https://aarla-dev.myshopify.com${url}`;
+        },
+      },
+    };
+    consumeForceFirstVisitParam(/** @type {any} */ (fakeWindow));
+    expect(replaced[0]).toBe("/?preview_theme_id=1");
+    expect(fakeWindow.location.href).not.toContain("aarla_force_first_visit");
+  });
 });
 
 describe("cookie persistence", () => {
@@ -1028,6 +1065,21 @@ describe("cookie persistence", () => {
     );
     clearVisitorState(storage);
     expect(readCookie(COOKIE_NAMESPACE)).toBeNull();
+    expect(readCookie(VIEWED_COOKIE_NAMESPACE)).toBeNull();
     expect(storage.length).toBe(0);
+  });
+
+  it("recovers from compact viewed cookie when other stores are empty", () => {
+    const storage = createMemoryStorage();
+    writeCookie(
+      VIEWED_COOKIE_NAMESPACE,
+      "vid123|cms66eqx50000js3ilky6h8fx|cms66eqx50000js3ilky6h8fx|1700003600000|",
+    );
+    const recovered = readVisitorState(storage);
+    expect(recovered?.viewedPromotionKeys).toContain(
+      "cms66eqx50000js3ilky6h8fx",
+    );
+    expect(recovered?.popupViewed).toBe(true);
+    expect(recovered?.activePromotionKey).toBe("cms66eqx50000js3ilky6h8fx");
   });
 });

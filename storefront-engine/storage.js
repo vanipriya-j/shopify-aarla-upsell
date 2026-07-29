@@ -6,6 +6,8 @@ import {
 } from "./engine.js";
 
 export const COOKIE_NAMESPACE = "aarla_promotions";
+/** Compact cookie — full JSON often fails silently when Shopify's jar is full. */
+export const VIEWED_COOKIE_NAMESPACE = "aarla_pv";
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year
 
 /**
@@ -13,6 +15,18 @@ const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year
  */
 function getDocument() {
   return typeof document !== "undefined" ? document : null;
+}
+
+/**
+ * @returns {Storage | null}
+ */
+function getSessionStorage() {
+  try {
+    if (typeof sessionStorage === "undefined") return null;
+    return sessionStorage;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -60,25 +74,36 @@ export function clearCookie(name) {
  * @returns {import('./engine.js').VisitorState | null}
  */
 export function readVisitorState(storage) {
-  const fromStorage = readFromLocalStorage(storage);
-  if (fromStorage) return fromStorage;
-  const fromCookie = readFromCookie();
-  // Recover localStorage when only the cookie survived (private mode, quota, etc.).
-  if (fromCookie && storage) {
-    try {
-      storage.setItem(STORAGE_NAMESPACE, JSON.stringify(fromCookie));
-    } catch {
-      // Ignore storage access errors.
-    }
+  const fromLocal = readFromWebStorage(storage);
+  if (fromLocal) return fromLocal;
+
+  const fromSession = readFromWebStorage(getSessionStorage());
+  if (fromSession) {
+    // Recover localStorage / cookies from sessionStorage.
+    writeVisitorState(storage, fromSession);
+    return fromSession;
   }
-  return fromCookie;
+
+  const fromCookie = readFromCookie();
+  if (fromCookie) {
+    writeVisitorState(storage, fromCookie);
+    return fromCookie;
+  }
+
+  const fromViewedCookie = readFromViewedCookie();
+  if (fromViewedCookie) {
+    writeVisitorState(storage, fromViewedCookie);
+    return fromViewedCookie;
+  }
+
+  return null;
 }
 
 /**
  * @param {Storage | null | undefined} storage
  * @returns {import('./engine.js').VisitorState | null}
  */
-function readFromLocalStorage(storage) {
+function readFromWebStorage(storage) {
   if (!storage) return null;
   try {
     const raw = storage.getItem(STORAGE_NAMESPACE);
@@ -121,8 +146,53 @@ function readFromCookie() {
 }
 
 /**
- * Persist to localStorage and a first-party cookie so show-once survives
- * browsers / embeds where localStorage is flaky.
+ * Compact cookie format: `visitorId|id1,id2|activeId|expiresAt|dismissedAt`
+ * @returns {import('./engine.js').VisitorState | null}
+ */
+function readFromViewedCookie() {
+  try {
+    const raw = readCookie(VIEWED_COOKIE_NAMESPACE);
+    if (!raw) return null;
+    const parts = raw.split("|");
+    const visitorId = parts[0] || createFallbackId();
+    const viewedPromotionKeys = (parts[1] || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const activePromotionKey = normalizeKey(parts[2] || null);
+    const promotionExpiresAt = nullableNumber(parts[3] || null);
+    const popupDismissedAt = nullableNumber(parts[4] || null);
+    if (
+      viewedPromotionKeys.length === 0 &&
+      !activePromotionKey &&
+      popupDismissedAt == null
+    ) {
+      return null;
+    }
+    const now = Date.now();
+    return normalizeState({
+      visitorId,
+      firstVisitAt: now,
+      lastVisitAt: now,
+      activePromotionKey,
+      activeDiscountCode: null,
+      promotionActivatedAt: activePromotionKey ? now : null,
+      promotionExpiresAt,
+      popupViewed: viewedPromotionKeys.length > 0,
+      popupDismissed: popupDismissedAt != null,
+      popupDismissedAt,
+      badgeDismissed: false,
+      hasActivatedPromotion: true,
+      viewedPromotionKeys,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist to localStorage, sessionStorage, full cookie (best effort), and a
+ * compact viewed cookie that survives when Shopify's cookie jar is nearly full.
  * @param {Storage | null | undefined} storage
  * @param {import('./engine.js').VisitorState} state
  */
@@ -132,7 +202,15 @@ export function writeVisitorState(storage, state) {
     try {
       storage.setItem(STORAGE_NAMESPACE, payload);
     } catch {
-      // Quota / privacy mode — cookie still written below.
+      // Quota / privacy mode.
+    }
+  }
+  const session = getSessionStorage();
+  if (session) {
+    try {
+      session.setItem(STORAGE_NAMESPACE, payload);
+    } catch {
+      // Ignore.
     }
   }
   try {
@@ -140,6 +218,33 @@ export function writeVisitorState(storage, state) {
   } catch {
     // Ignore cookie write failures.
   }
+  try {
+    writeViewedCookie(state);
+  } catch {
+    // Ignore.
+  }
+}
+
+/**
+ * @param {import('./engine.js').VisitorState} state
+ */
+function writeViewedCookie(state) {
+  const viewed = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys.filter(Boolean).join(",")
+    : "";
+  const active = state.activePromotionKey || "";
+  const expires =
+    state.promotionExpiresAt != null ? String(state.promotionExpiresAt) : "";
+  const dismissed =
+    state.popupDismissedAt != null ? String(state.popupDismissedAt) : "";
+  const compact = [
+    state.visitorId || createFallbackId(),
+    viewed,
+    active,
+    expires,
+    dismissed,
+  ].join("|");
+  writeCookie(VIEWED_COOKIE_NAMESPACE, compact);
 }
 
 /**
@@ -153,7 +258,16 @@ export function clearVisitorState(storage) {
       // Ignore.
     }
   }
+  const session = getSessionStorage();
+  if (session) {
+    try {
+      session.removeItem(STORAGE_NAMESPACE);
+    } catch {
+      // Ignore.
+    }
+  }
   clearCookie(COOKIE_NAMESPACE);
+  clearCookie(VIEWED_COOKIE_NAMESPACE);
 }
 
 /**

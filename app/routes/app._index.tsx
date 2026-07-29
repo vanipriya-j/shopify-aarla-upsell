@@ -96,7 +96,7 @@ export default function PromotionsIndex() {
             Activate theme embed
           </s-link>
           <s-link href={forceFirstVisitUrl} target="_blank">
-            Test first visit
+            Test first visit (one-shot)
           </s-link>
           <s-link href="/app/additional">Full setup guide</s-link>
         </s-stack>
