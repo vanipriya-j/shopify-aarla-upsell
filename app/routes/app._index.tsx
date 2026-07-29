@@ -100,6 +100,11 @@ export default function PromotionsIndex() {
           </s-link>
           <s-link href="/app/additional">Full setup guide</s-link>
         </s-stack>
+        <s-paragraph>
+          If the popup keeps reopening on every page, open the preview theme
+          editor → App embeds → Aarla Promotions and turn off{" "}
+          <strong>Test mode</strong>, then save.
+        </s-paragraph>
       </s-section>
 
       <s-section heading="Promotions">

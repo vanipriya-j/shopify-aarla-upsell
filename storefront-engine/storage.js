@@ -8,6 +8,8 @@ import {
 export const COOKIE_NAMESPACE = "aarla_promotions";
 /** Compact cookie — full JSON often fails silently when Shopify's jar is full. */
 export const VIEWED_COOKIE_NAMESPACE = "aarla_pv";
+/** Isolated session key used while theme embed Test mode is on. */
+export const TEST_STORAGE_NAMESPACE = "aarla_promotions_test";
 const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year
 
 /**
@@ -71,11 +73,15 @@ export function clearCookie(name) {
 
 /**
  * @param {Storage | null | undefined} storage
+ * @param {{ allowFallbacks?: boolean }} [options]
  * @returns {import('./engine.js').VisitorState | null}
  */
-export function readVisitorState(storage) {
+export function readVisitorState(storage, options = {}) {
+  const allowFallbacks = options.allowFallbacks !== false;
   const fromLocal = readFromWebStorage(storage);
   if (fromLocal) return fromLocal;
+
+  if (!allowFallbacks) return null;
 
   const fromSession = readFromWebStorage(getSessionStorage());
   if (fromSession) {
@@ -191,12 +197,14 @@ function readFromViewedCookie() {
 }
 
 /**
- * Persist to localStorage, sessionStorage, full cookie (best effort), and a
- * compact viewed cookie that survives when Shopify's cookie jar is nearly full.
+ * Persist visitor state.
  * @param {Storage | null | undefined} storage
  * @param {import('./engine.js').VisitorState} state
+ * @param {{ mirrorSession?: boolean, writeCookies?: boolean }} [options]
  */
-export function writeVisitorState(storage, state) {
+export function writeVisitorState(storage, state, options = {}) {
+  const mirrorSession = options.mirrorSession !== false;
+  const writeCookies = options.writeCookies !== false;
   const payload = JSON.stringify(state);
   if (storage) {
     try {
@@ -205,23 +213,27 @@ export function writeVisitorState(storage, state) {
       // Quota / privacy mode.
     }
   }
-  const session = getSessionStorage();
-  if (session) {
+  if (mirrorSession) {
+    const session = getSessionStorage();
+    if (session) {
+      try {
+        session.setItem(STORAGE_NAMESPACE, payload);
+      } catch {
+        // Ignore.
+      }
+    }
+  }
+  if (writeCookies) {
     try {
-      session.setItem(STORAGE_NAMESPACE, payload);
+      writeCookie(COOKIE_NAMESPACE, payload);
+    } catch {
+      // Ignore cookie write failures.
+    }
+    try {
+      writeViewedCookie(state);
     } catch {
       // Ignore.
     }
-  }
-  try {
-    writeCookie(COOKIE_NAMESPACE, payload);
-  } catch {
-    // Ignore cookie write failures.
-  }
-  try {
-    writeViewedCookie(state);
-  } catch {
-    // Ignore.
   }
 }
 
@@ -249,8 +261,11 @@ function writeViewedCookie(state) {
 
 /**
  * @param {Storage | null | undefined} storage
+ * @param {{ clearCookies?: boolean, clearSession?: boolean }} [options]
  */
-export function clearVisitorState(storage) {
+export function clearVisitorState(storage, options = {}) {
+  const clearCookies = options.clearCookies !== false;
+  const clearSession = options.clearSession !== false;
   if (storage) {
     try {
       storage.removeItem(STORAGE_NAMESPACE);
@@ -258,16 +273,72 @@ export function clearVisitorState(storage) {
       // Ignore.
     }
   }
-  const session = getSessionStorage();
-  if (session) {
-    try {
-      session.removeItem(STORAGE_NAMESPACE);
-    } catch {
-      // Ignore.
+  if (clearSession) {
+    const session = getSessionStorage();
+    if (session) {
+      try {
+        session.removeItem(STORAGE_NAMESPACE);
+        session.removeItem(TEST_STORAGE_NAMESPACE);
+      } catch {
+        // Ignore.
+      }
     }
   }
-  clearCookie(COOKIE_NAMESPACE);
-  clearCookie(VIEWED_COOKIE_NAMESPACE);
+  if (clearCookies) {
+    clearCookie(COOKIE_NAMESPACE);
+    clearCookie(VIEWED_COOKIE_NAMESPACE);
+  }
+}
+
+/**
+ * Session-backed storage for Test mode — survives navigations in the tab
+ * without writing live localStorage/cookies.
+ * @returns {Storage}
+ */
+export function createTestModeStorage() {
+  const session = getSessionStorage();
+  if (!session) return createMemoryStorage();
+  return {
+    get length() {
+      return session.getItem(TEST_STORAGE_NAMESPACE) ? 1 : 0;
+    },
+    clear() {
+      try {
+        session.removeItem(TEST_STORAGE_NAMESPACE);
+      } catch {
+        // Ignore.
+      }
+    },
+    getItem(key) {
+      if (key !== STORAGE_NAMESPACE && key !== TEST_STORAGE_NAMESPACE) {
+        return null;
+      }
+      try {
+        return session.getItem(TEST_STORAGE_NAMESPACE);
+      } catch {
+        return null;
+      }
+    },
+    key(index) {
+      return index === 0 && this.length ? STORAGE_NAMESPACE : null;
+    },
+    removeItem(key) {
+      if (key !== STORAGE_NAMESPACE && key !== TEST_STORAGE_NAMESPACE) return;
+      try {
+        session.removeItem(TEST_STORAGE_NAMESPACE);
+      } catch {
+        // Ignore.
+      }
+    },
+    setItem(key, value) {
+      if (key !== STORAGE_NAMESPACE && key !== TEST_STORAGE_NAMESPACE) return;
+      try {
+        session.setItem(TEST_STORAGE_NAMESPACE, String(value));
+      } catch {
+        // Ignore.
+      }
+    },
+  };
 }
 
 /**

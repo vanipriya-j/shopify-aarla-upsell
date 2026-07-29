@@ -93,11 +93,16 @@ export default function SetupGuide() {
           the first open.
         </s-paragraph>
         <s-paragraph>
+          If the popup keeps reopening, open the theme editor → App embeds →
+          Aarla Promotions and turn <strong>Test mode</strong> OFF, then save.
+          Test mode used to re-show the popup on every page; it now uses an
+          isolated session store, but leaving it on is still not recommended
+          for normal browsing.
+        </s-paragraph>
+        <s-paragraph>
           If nothing appears, confirm the embed is enabled and saved on that
           theme, then check the browser Network tab for{" "}
-          <code>/apps/aarla-promotions/active</code>. Also turn off{" "}
-          <strong>Test mode</strong> on the theme embed — test mode never
-          persists visitor state.
+          <code>/apps/aarla-promotions/active</code>.
         </s-paragraph>
       </s-section>
     </s-page>

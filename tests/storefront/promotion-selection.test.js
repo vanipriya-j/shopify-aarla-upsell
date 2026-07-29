@@ -608,6 +608,43 @@ describe("evaluatePromotionsForVisit", () => {
     expect(readVisitorState(liveStorage)).toEqual(before);
   });
 
+  it("suppresses reopen in test mode when using persistent test storage", () => {
+    const liveStorage = createMemoryStorage();
+    const testStorage = createMemoryStorage();
+    const first = evaluatePromotionsForVisit({
+      config: {
+        global: { ...baseGlobal, testMode: true, testPreview: "automatic" },
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      testStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(first.suppressPopup).toBe(false);
+    writeVisitorState(
+      testStorage,
+      markPopupViewed(first.state, "welcome"),
+      { mirrorSession: false, writeCookies: false },
+    );
+
+    const second = evaluatePromotionsForVisit({
+      config: {
+        global: { ...baseGlobal, testMode: true, testPreview: "automatic" },
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      testStorage,
+      search: "",
+      pathname: "/collections/all",
+      now: 1_700_000_000_500,
+    });
+    expect(second.suppressPopup).toBe(true);
+    // Live storage untouched.
+    expect(readVisitorState(liveStorage)).toBeNull();
+  });
+
   it("hides code-related controls when discount code is empty", () => {
     const emptyCode = promo({
       id: "campaign_a",

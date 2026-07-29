@@ -17,8 +17,7 @@ import {
 } from "./engine.js";
 import {
   clearVisitorState,
-  createMemoryStorage,
-  ensureVisitorState,
+  createTestModeStorage,
   readVisitorState,
   touchVisitorState,
   writeVisitorState,
@@ -282,48 +281,57 @@ export function evaluatePromotionsForVisit({
   cartTotal = 0,
 }) {
   const testMode = Boolean(config.global.testMode);
-  const storage = testMode ? testStorage || createMemoryStorage() : liveStorage;
+  // Test mode uses an isolated session store so live visitors are untouched,
+  // but show-once / suppress still work across navigations in the same tab.
+  const storage = testMode
+    ? testStorage || createTestModeStorage()
+    : liveStorage;
+  const persistOptions = testMode
+    ? { mirrorSession: false, writeCookies: false }
+    : {};
+  const readOptions = testMode ? { allowFallbacks: false } : {};
 
   const forceFirstVisit = shouldForceFirstVisit(search);
-  if (forceFirstVisit && !testMode) {
+  if (forceFirstVisit) {
     // Merchant QA helper: ?aarla_force_first_visit=1 clears visit markers.
     // One-shot: strip the query param so refresh/navigation does not re-clear.
-    clearVisitorState(liveStorage);
+    clearVisitorState(storage, {
+      clearCookies: !testMode,
+      clearSession: true,
+    });
+    if (!testMode) clearVisitorState(liveStorage);
     if (typeof globalThis !== "undefined" && globalThis.window) {
       consumeForceFirstVisitParam(globalThis.window);
     }
   }
 
-  const liveSnapshot = liveStorage ? readVisitorState(liveStorage) : null;
+  const liveSnapshot = liveStorage
+    ? readVisitorState(liveStorage, { allowFallbacks: !testMode })
+    : null;
   const utm = readUtmParams(search);
 
   let isFirstVisit = false;
   /** @type {import('./engine.js').VisitorState} */
   let state;
-  /** Whether localStorage already had a real visitor record before this run. */
+  /** Whether storage already had a real visitor record before this run. */
   let hadExistingState = false;
 
-  if (testMode) {
-    const ensured = ensureVisitorState(storage, now);
-    state = ensured.state;
-    isFirstVisit = true;
-    hadExistingState = true;
+  const existing = forceFirstVisit
+    ? null
+    : readVisitorState(storage, readOptions);
+  isFirstVisit = existing == null;
+  hadExistingState = existing != null;
+  if (existing) {
+    state = touchVisitorState(existing, now);
   } else {
-    const existing = forceFirstVisit ? null : readVisitorState(storage);
-    isFirstVisit = existing == null;
-    hadExistingState = existing != null;
-    if (existing) {
-      state = touchVisitorState(existing, now);
-    } else {
-      // In-memory only — do not persist until a promotion activates.
-      // Otherwise a no-match page load permanently blocks first-visit.
-      state = createVisitorState(now);
-    }
+    // In-memory only — do not persist until a promotion activates.
+    // Otherwise a no-match page load permanently blocks first-visit.
+    state = createVisitorState(now);
   }
 
   if (hadExistingState && isPromotionExpired(state, now)) {
     state = clearActivePromotion(state);
-    writeVisitorState(storage, state);
+    writeVisitorState(storage, state, persistOptions);
   }
 
   const sourcePromotions =
@@ -354,8 +362,7 @@ export function evaluatePromotionsForVisit({
       promotions,
       utm,
       currentPath: pathname,
-      isFirstTimeVisitor:
-        isFirstVisit || (testMode && config.global.testPreview === "automatic"),
+      isFirstTimeVisitor: isFirstVisit,
       isReturningVisitor: !isFirstVisit,
       productId,
       variantId,
@@ -371,11 +378,11 @@ export function evaluatePromotionsForVisit({
     now,
   });
 
-  let shouldPersist = hadExistingState || testMode;
+  let shouldPersist = hadExistingState;
 
   if (resolution.action === "clear") {
     state = clearActivePromotion(state);
-    shouldPersist = hadExistingState || testMode;
+    shouldPersist = hadExistingState;
   } else if (
     (resolution.action === "activate" || resolution.action === "replace") &&
     resolution.promotion
@@ -385,7 +392,7 @@ export function evaluatePromotionsForVisit({
   }
 
   if (shouldPersist) {
-    writeVisitorState(storage, state);
+    writeVisitorState(storage, state, persistOptions);
   }
 
   const activePromotion = state.activePromotionKey
@@ -394,8 +401,9 @@ export function evaluatePromotionsForVisit({
       ) || null
     : null;
 
+  // Respect show-once / viewed suppression even in test mode.
   const suppressPopup = activePromotion
-    ? shouldSuppressPopup(state, activePromotion, now) && !testMode
+    ? shouldSuppressPopup(state, activePromotion, now)
     : true;
 
   const delayMs = activePromotion
@@ -477,7 +485,9 @@ function createUiController({ window, document, config, log }) {
 
   function persist() {
     if (!evaluation) return;
-    writeVisitorState(evaluation.storage, evaluation.state);
+    writeVisitorState(evaluation.storage, evaluation.state, evaluation.testMode
+      ? { mirrorSession: false, writeCookies: false }
+      : {});
   }
 
   async function start() {
