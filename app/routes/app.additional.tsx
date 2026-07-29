@@ -82,14 +82,22 @@ export default function SetupGuide() {
           </s-link>
         </s-paragraph>
         <s-paragraph>
-          It targets the preview theme when available, clears the local visit
-          marker, and re-triggers first-visit matching. Wait ~1.2s for the
-          Welcome popup.
+          It targets the preview theme when available and clears visit markers
+          once (the force flag is stripped from the URL automatically). Wait
+          ~1.2s for the Welcome popup, then navigate to another page — it should
+          not reopen. Check Application → Cookies for <code>aarla_pv</code>.
+        </s-paragraph>
+        <s-paragraph>
+          Do not keep refreshing with <code>aarla_force_first_visit=1</code> in
+          the URL if you are testing show-once; use a normal preview URL after
+          the first open.
         </s-paragraph>
         <s-paragraph>
           If nothing appears, confirm the embed is enabled and saved on that
           theme, then check the browser Network tab for{" "}
-          <code>/apps/aarla-promotions/active</code>.
+          <code>/apps/aarla-promotions/active</code>. Also turn off{" "}
+          <strong>Test mode</strong> on the theme embed — test mode never
+          persists visitor state.
         </s-paragraph>
       </s-section>
     </s-page>
