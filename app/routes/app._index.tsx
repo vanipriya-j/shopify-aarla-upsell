@@ -32,10 +32,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shop: session.shop,
     previewThemeId,
     embedDeepLink: buildEmbedDeepLink(session.shop, apiKey, previewThemeId),
+    liveEmbedDeepLink: buildEmbedDeepLink(session.shop, apiKey),
     forceFirstVisitUrl: buildForceFirstVisitUrl(
       session.shop,
       previewThemeId,
     ),
+    liveStoreUrl: `https://${session.shop}/`,
   };
 };
 
@@ -75,8 +77,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function PromotionsIndex() {
-  const { promotions, embedDeepLink, forceFirstVisitUrl, previewThemeId } =
-    useLoaderData<typeof loader>();
+  const {
+    promotions,
+    embedDeepLink,
+    liveEmbedDeepLink,
+    forceFirstVisitUrl,
+    previewThemeId,
+    liveStoreUrl,
+  } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Aarla Promotions">
@@ -84,16 +92,33 @@ export default function PromotionsIndex() {
         Create promotion
       </s-button>
 
-      <s-section heading="Storefront setup">
+      <s-section heading="Go live">
         <s-paragraph>
-          First visit only works on a theme where the app embed is enabled and
-          saved. During local development that is the CLI preview theme, not the
-          live published theme
-          {previewThemeId ? ` (preview theme ${previewThemeId})` : ""}.
+          Extension version <code>promotions-storefront-1</code> is released.
+          Enable the embed on the <strong>published</strong> theme (not only the
+          CLI preview), keep <strong>Test mode</strong> off, then verify the
+          live storefront.
+        </s-paragraph>
+        <s-stack direction="inline" gap="base">
+          <s-link href={liveEmbedDeepLink} target="_blank">
+            Enable embed on live theme
+          </s-link>
+          <s-link href={liveStoreUrl} target="_blank">
+            Open live storefront
+          </s-link>
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Dev / QA setup">
+        <s-paragraph>
+          During <code>shopify app dev</code>, first-visit QA uses the CLI
+          preview theme
+          {previewThemeId ? ` (${previewThemeId})` : ""}, not the published
+          theme.
         </s-paragraph>
         <s-stack direction="inline" gap="base">
           <s-link href={embedDeepLink} target="_blank">
-            Activate theme embed
+            Activate preview theme embed
           </s-link>
           <s-link href={forceFirstVisitUrl} target="_blank">
             Test first visit (one-shot)
@@ -101,9 +126,8 @@ export default function PromotionsIndex() {
           <s-link href="/app/additional">Full setup guide</s-link>
         </s-stack>
         <s-paragraph>
-          If the popup keeps reopening on every page, open the preview theme
-          editor → App embeds → Aarla Promotions and turn off{" "}
-          <strong>Test mode</strong>, then save.
+          If the popup keeps reopening, turn off <strong>Test mode</strong> on
+          the embed and save.
         </s-paragraph>
       </s-section>
 

@@ -101,11 +101,25 @@ This app does **not** create discounts. For AARLA10:
 ## Deploy
 
 ```bash
-npm run build
-npm run deploy
+npm run build:extension
+npx shopify app deploy --allow-updates --message "..." --version "..."
 ```
 
-Ensure the app proxy is configured (`/apps/aarla-promotions` → app `/apps/aarla-promotions`) and scopes include `read_products`.
+`shopify app deploy` releases the **theme extension** (and app config). It does
+**not** host the Node web app. Keep a stable `SHOPIFY_APP_URL` (Fly, Render,
+Railway, etc.) for admin + app proxy, or continue using `shopify app dev`
+tunnels for the development store only.
+
+### Publish on the live theme
+
+1. Release an app version (`shopify app deploy`)
+2. Online Store → Themes → **published theme** → Customize → App embeds
+3. Enable **Aarla Promotions**, turn **Test mode** OFF, Save
+4. Confirm `AARLA10` (or your codes) exist in Admin → Discounts
+5. Open the live storefront (no `preview_theme_id`) and verify the popup
+
+App proxy path: `/apps/aarla-promotions` → app `/apps/aarla-promotions`.
+Scopes: `read_products`.
 
 ## Quality checks
 
