@@ -19,7 +19,7 @@ async function main() {
     data: {
       shop,
       name: "First Visit Welcome",
-      enabled: false,
+      enabled: true,
       priority: 10,
       audienceType: "FIRST_VISIT",
       displayType: "POPUP",

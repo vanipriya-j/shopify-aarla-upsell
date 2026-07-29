@@ -1,26 +1,66 @@
 import {
   activatePromotion,
+  applyDiscountCodeToCart,
   buildDiscountUrl,
   clearActivePromotion,
+  createVisitorState,
   filterScheduledPromotions,
   getCtaUrl,
   getPromotionId,
   hasDiscountCode,
   isPromotionExpired,
+  markPopupViewed,
   readUtmParams,
   resolveActivePromotion,
   selectPromotion,
   shouldSuppressPopup,
 } from "./engine.js";
 import {
-  createMemoryStorage,
-  ensureVisitorState,
+  clearVisitorState,
+  createTestModeStorage,
   readVisitorState,
+  touchVisitorState,
   writeVisitorState,
 } from "./storage.js";
 
 const ROOT_ID = "aarla-promo-root";
 const CONFIG_SELECTOR = "[data-aarla-promotions-config]";
+const FORCE_FIRST_VISIT_PARAM = "aarla_force_first_visit";
+
+/**
+ * QA helper: ?aarla_force_first_visit=1 (or true) clears the visit marker and
+ * re-runs first-visit matching for this page load.
+ * @param {string} search
+ */
+export function shouldForceFirstVisit(search) {
+  try {
+    const params = new URLSearchParams(
+      search.startsWith("?") ? search.slice(1) : search,
+    );
+    const value = (params.get(FORCE_FIRST_VISIT_PARAM) || "").toLowerCase();
+    return value === "1" || value === "true" || value === "yes";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the force-first-visit flag from the address bar so a refresh does not
+ * keep clearing visitor markers (one-shot QA helper).
+ * @param {Window & typeof globalThis} [windowRef]
+ */
+export function consumeForceFirstVisitParam(windowRef = globalThis.window) {
+  try {
+    if (!windowRef?.location || !windowRef.history?.replaceState) return;
+    const url = new URL(windowRef.location.href);
+    if (!url.searchParams.has(FORCE_FIRST_VISIT_PARAM)) return;
+    url.searchParams.delete(FORCE_FIRST_VISIT_PARAM);
+    const next = `${url.pathname}${url.search}${url.hash}`;
+    windowRef.history.replaceState(windowRef.history.state, "", next);
+  } catch {
+    // Ignore history API failures.
+  }
+}
 
 /**
  * @param {Document} document
@@ -241,29 +281,57 @@ export function evaluatePromotionsForVisit({
   cartTotal = 0,
 }) {
   const testMode = Boolean(config.global.testMode);
-  const storage = testMode ? testStorage || createMemoryStorage() : liveStorage;
+  // Test mode uses an isolated session store so live visitors are untouched,
+  // but show-once / suppress still work across navigations in the same tab.
+  const storage = testMode
+    ? testStorage || createTestModeStorage()
+    : liveStorage;
+  const persistOptions = testMode
+    ? { mirrorSession: false, writeCookies: false }
+    : {};
+  const readOptions = testMode ? { allowFallbacks: false } : {};
 
-  const liveSnapshot = liveStorage ? readVisitorState(liveStorage) : null;
+  const forceFirstVisit = shouldForceFirstVisit(search);
+  if (forceFirstVisit) {
+    // Merchant QA helper: ?aarla_force_first_visit=1 clears visit markers.
+    // One-shot: strip the query param so refresh/navigation does not re-clear.
+    clearVisitorState(storage, {
+      clearCookies: !testMode,
+      clearSession: true,
+    });
+    if (!testMode) clearVisitorState(liveStorage);
+    if (typeof globalThis !== "undefined" && globalThis.window) {
+      consumeForceFirstVisitParam(globalThis.window);
+    }
+  }
+
+  const liveSnapshot = liveStorage
+    ? readVisitorState(liveStorage, { allowFallbacks: !testMode })
+    : null;
   const utm = readUtmParams(search);
 
   let isFirstVisit = false;
   /** @type {import('./engine.js').VisitorState} */
   let state;
+  /** Whether storage already had a real visitor record before this run. */
+  let hadExistingState = false;
 
-  if (testMode) {
-    const ensured = ensureVisitorState(storage, now);
-    state = ensured.state;
-    isFirstVisit = true;
+  const existing = forceFirstVisit
+    ? null
+    : readVisitorState(storage, readOptions);
+  isFirstVisit = existing == null;
+  hadExistingState = existing != null;
+  if (existing) {
+    state = touchVisitorState(existing, now);
   } else {
-    const existing = readVisitorState(storage);
-    isFirstVisit = existing == null;
-    const ensured = ensureVisitorState(storage, now);
-    state = ensured.state;
+    // In-memory only — do not persist until a promotion activates.
+    // Otherwise a no-match page load permanently blocks first-visit.
+    state = createVisitorState(now);
   }
 
-  if (isPromotionExpired(state, now)) {
+  if (hadExistingState && isPromotionExpired(state, now)) {
     state = clearActivePromotion(state);
-    writeVisitorState(storage, state);
+    writeVisitorState(storage, state, persistOptions);
   }
 
   const sourcePromotions =
@@ -294,8 +362,7 @@ export function evaluatePromotionsForVisit({
       promotions,
       utm,
       currentPath: pathname,
-      isFirstTimeVisitor:
-        isFirstVisit || (testMode && config.global.testPreview === "automatic"),
+      isFirstTimeVisitor: isFirstVisit,
       isReturningVisitor: !isFirstVisit,
       productId,
       variantId,
@@ -311,16 +378,22 @@ export function evaluatePromotionsForVisit({
     now,
   });
 
+  let shouldPersist = hadExistingState;
+
   if (resolution.action === "clear") {
     state = clearActivePromotion(state);
+    shouldPersist = hadExistingState;
   } else if (
     (resolution.action === "activate" || resolution.action === "replace") &&
     resolution.promotion
   ) {
     state = activatePromotion(state, resolution.promotion, now);
+    shouldPersist = true;
   }
 
-  writeVisitorState(storage, state);
+  if (shouldPersist) {
+    writeVisitorState(storage, state, persistOptions);
+  }
 
   const activePromotion = state.activePromotionKey
     ? promotions.find(
@@ -328,8 +401,9 @@ export function evaluatePromotionsForVisit({
       ) || null
     : null;
 
+  // Respect show-once / viewed suppression even in test mode.
   const suppressPopup = activePromotion
-    ? shouldSuppressPopup(state, activePromotion, now) && !testMode
+    ? shouldSuppressPopup(state, activePromotion, now)
     : true;
 
   const delayMs = activePromotion
@@ -411,7 +485,9 @@ function createUiController({ window, document, config, log }) {
 
   function persist() {
     if (!evaluation) return;
-    writeVisitorState(evaluation.storage, evaluation.state);
+    writeVisitorState(evaluation.storage, evaluation.state, evaluation.testMode
+      ? { mirrorSession: false, writeCookies: false }
+      : {});
   }
 
   async function start() {
@@ -553,9 +629,11 @@ function createUiController({ window, document, config, log }) {
     const code = hasDiscountCode(promo.discountCode)
       ? String(promo.discountCode).trim()
       : "";
+    // Prefer /cart after apply so shoppers can see the attached code.
+    const destination = getCtaUrl(promo) || "/cart";
     const ctaHref = code
-      ? buildDiscountUrl(code, getCtaUrl(promo))
-      : getCtaUrl(promo);
+      ? buildDiscountUrl(code, destination === "/" ? "/cart" : destination)
+      : destination;
     const ctaLabel = code
       ? promo.ctaText || config.i18n?.apply_and_shop || "Apply and shop"
       : promo.ctaText || "Shop";
@@ -595,6 +673,7 @@ function createUiController({ window, document, config, log }) {
             </div>`
           : ""
       }
+      <p class="aarla-promo-dialog__status" data-aarla-status hidden></p>
       <a class="aarla-promo-dialog__cta" href="${escapeAttribute(ctaHref)}">${escapeHtml(
         ctaLabel,
       )}</a>
@@ -604,7 +683,10 @@ function createUiController({ window, document, config, log }) {
     root.appendChild(overlay);
     isOpen = true;
 
-    evaluation.state.popupViewed = true;
+    evaluation.state = markPopupViewed(
+      evaluation.state,
+      getPromotionId(promo),
+    );
     persist();
 
     const closeBtn = dialog.querySelector(".aarla-promo-dialog__close");
@@ -612,6 +694,16 @@ function createUiController({ window, document, config, log }) {
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) closePopup({ dismissed: true });
     });
+
+    const statusEl = /** @type {HTMLElement | null} */ (
+      dialog.querySelector("[data-aarla-status]")
+    );
+    const setStatus = (message, tone = "info") => {
+      if (!statusEl) return;
+      statusEl.hidden = !message;
+      statusEl.textContent = message || "";
+      statusEl.dataset.tone = tone;
+    };
 
     const copyBtn = dialog.querySelector(".aarla-promo-dialog__copy");
     copyBtn?.addEventListener("click", async () => {
@@ -622,6 +714,66 @@ function createUiController({ window, document, config, log }) {
         log("clipboard copy failed");
       }
     });
+
+    const cta = /** @type {HTMLAnchorElement | null} */ (
+      dialog.querySelector(".aarla-promo-dialog__cta")
+    );
+    if (cta && code) {
+      cta.addEventListener("click", async (event) => {
+        event.preventDefault();
+        cta.setAttribute("aria-busy", "true");
+        cta.classList.add("aarla-promo-dialog__cta--busy");
+        setStatus(
+          config.i18n?.applying_code || "Applying code to your cart…",
+          "info",
+        );
+
+        const result = await applyDiscountCodeToCart(
+          code,
+          window.fetch.bind(window),
+        );
+        log("discount apply", result);
+
+        if (result.ok && result.applicable) {
+          setStatus(
+            (config.i18n?.code_applied || "{{ code }} added to your cart").replace(
+              "{{ code }}",
+              code,
+            ),
+            "success",
+          );
+          window.setTimeout(() => {
+            window.location.assign(destination === "/" ? "/cart" : destination);
+          }, 350);
+          return;
+        }
+
+        if (result.ok && !result.applicable) {
+          setStatus(
+            (
+              config.i18n?.code_not_applicable ||
+              "{{ code }} was attached, but Shopify says it is not applicable. Create an active discount with this exact code in Admin → Discounts."
+            ).replace("{{ code }}", code),
+            "error",
+          );
+          cta.removeAttribute("aria-busy");
+          cta.classList.remove("aarla-promo-dialog__cta--busy");
+          // Still use the classic discount URL so the cookie is set, then cart.
+          window.setTimeout(() => {
+            window.location.assign(buildDiscountUrl(code, "/cart"));
+          }, 1600);
+          return;
+        }
+
+        // Network / endpoint failure — fall back to /discount/CODE redirect.
+        setStatus(
+          config.i18n?.code_apply_fallback ||
+            "Opening Shopify discount link…",
+          "info",
+        );
+        window.location.assign(ctaHref);
+      });
+    }
 
     document.addEventListener("keydown", onKeyDown);
     window.setTimeout(() => {
@@ -737,4 +889,4 @@ function escapeAttribute(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
 }
 
-export { buildDiscountUrl, hasDiscountCode };
+export { applyDiscountCodeToCart, buildDiscountUrl, hasDiscountCode };

@@ -28,6 +28,10 @@
       "copy_code": {{ 'aarla_promotions.copy_code' | t | json }},
       "copied": {{ 'aarla_promotions.copied' | t | json }},
       "apply_and_shop": {{ 'aarla_promotions.apply_and_shop' | t | json }},
+      "applying_code": {{ 'aarla_promotions.applying_code' | t | json }},
+      "code_applied": {{ 'aarla_promotions.code_applied' | t | json }},
+      "code_not_applicable": {{ 'aarla_promotions.code_not_applicable' | t | json }},
+      "code_apply_fallback": {{ 'aarla_promotions.code_apply_fallback' | t | json }},
       "test_mode_label": {{ 'aarla_promotions.test_mode_label' | t | json }},
       "reminder_with_code": {{ 'aarla_promotions.reminder_with_code' | t | json }},
       "reminder_without_code": {{ 'aarla_promotions.reminder_without_code' | t | json }},
@@ -58,7 +62,7 @@
       "id": "test_mode",
       "label": "Test mode",
       "default": false,
-      "info": "Preview without writing live visitor localStorage. Use Test preview ID below."
+      "info": "Uses an isolated session store so live visitors are not affected. Show-once still works in this browser tab. Turn this OFF for normal storefront behavior."
     },
     {
       "type": "text",

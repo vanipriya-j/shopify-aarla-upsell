@@ -90,6 +90,8 @@ export const AUDIENCE_MATCH_ORDER = /** @type {const} */ ([
  * @property {boolean} popupDismissed
  * @property {number | null} popupDismissedAt
  * @property {boolean} badgeDismissed
+ * @property {boolean} [hasActivatedPromotion] sticky flag — survives clear/expiry
+ * @property {string[]} [viewedPromotionKeys] promotion ids whose popup was shown
  */
 
 /**
@@ -606,11 +608,21 @@ export function resolveActivePromotion({
  */
 export function shouldSuppressPopup(state, promotion, now = Date.now()) {
   const id = getPromotionId(promotion);
+  const viewedKeys = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys
+    : [];
+
+  // Never reopen while this promotion is still active and was already shown.
+  // (Independent of showOnce — otherwise every navigation reopens the popup.)
   if (
     state.activePromotionKey === id &&
-    promotion.showOnce &&
-    state.popupViewed
+    (state.popupViewed || viewedKeys.includes(id))
   ) {
+    return true;
+  }
+
+  // showOnce: suppress forever for this promotion id, even after expiry.
+  if (promotion.showOnce && viewedKeys.includes(id)) {
     return true;
   }
 
@@ -630,6 +642,27 @@ export function shouldSuppressPopup(state, promotion, now = Date.now()) {
 }
 
 /**
+ * Mark a promotion popup as viewed (persists across activate/clear cycles).
+ * @param {VisitorState} state
+ * @param {string} promotionId
+ * @returns {VisitorState}
+ */
+export function markPopupViewed(state, promotionId) {
+  const id = String(promotionId || "").trim();
+  const existing = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys
+    : [];
+  const viewedPromotionKeys =
+    id && !existing.includes(id) ? [...existing, id] : existing;
+  return {
+    ...state,
+    popupViewed: true,
+    viewedPromotionKeys,
+    hasActivatedPromotion: true,
+  };
+}
+
+/**
  * @param {string} code
  * @param {string} redirectPath
  * @returns {string}
@@ -639,9 +672,71 @@ export function buildDiscountUrl(code, redirectPath) {
   const path =
     redirectPath && String(redirectPath).trim()
       ? String(redirectPath).trim()
-      : "/";
+      : "/cart";
   const encodedRedirect = encodeURIComponent(path);
   return `/discount/${encodedCode}?redirect=${encodedRedirect}`;
+}
+
+/**
+ * Apply a discount code to the Ajax cart. Returns whether Shopify marks the
+ * code applicable (requires a real Admin discount to exist).
+ * @param {string} code
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<{ ok: boolean, applicable: boolean, cart: Record<string, unknown> | null, error?: string }>}
+ */
+export async function applyDiscountCodeToCart(code, fetchImpl) {
+  const trimmed = String(code || "").trim();
+  if (!trimmed) {
+    return { ok: false, applicable: false, cart: null, error: "missing_code" };
+  }
+  const fetchFn =
+    typeof fetchImpl === "function"
+      ? fetchImpl
+      : typeof fetch === "function"
+        ? fetch
+        : null;
+  if (!fetchFn) {
+    return { ok: false, applicable: false, cart: null, error: "no_fetch" };
+  }
+
+  try {
+    const response = await fetchFn("/cart/update.js", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({ discount: trimmed }),
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        applicable: false,
+        cart: null,
+        error: `http_${response.status}`,
+      };
+    }
+    const cart = await response.json();
+    const codes = Array.isArray(cart?.discount_codes) ? cart.discount_codes : [];
+    const match = codes.find(
+      (entry) =>
+        normalizeMatchValue(entry?.code) === normalizeMatchValue(trimmed),
+    );
+    const applicable = Boolean(match?.applicable);
+    return {
+      ok: true,
+      applicable,
+      cart,
+      error: match
+        ? applicable
+          ? undefined
+          : "not_applicable"
+        : "not_attached",
+    };
+  } catch {
+    return { ok: false, applicable: false, cart: null, error: "network" };
+  }
 }
 
 /**
@@ -673,6 +768,8 @@ export function createVisitorState(
     popupDismissed: false,
     popupDismissedAt: null,
     badgeDismissed: false,
+    hasActivatedPromotion: false,
+    viewedPromotionKeys: [],
   };
 }
 
@@ -704,6 +801,18 @@ export function clearActivePromotion(state) {
     popupDismissed: false,
     popupDismissedAt: null,
     badgeDismissed: false,
+    viewedPromotionKeys: Array.isArray(state.viewedPromotionKeys)
+      ? state.viewedPromotionKeys
+      : [],
+    // Keep sticky visit marker so expired campaigns don't re-trigger first-visit.
+    hasActivatedPromotion:
+      Boolean(state.hasActivatedPromotion) ||
+      Boolean(state.activePromotionKey) ||
+      state.promotionActivatedAt != null ||
+      state.popupViewed ||
+      state.popupDismissed ||
+      (Array.isArray(state.viewedPromotionKeys) &&
+        state.viewedPromotionKeys.length > 0),
   };
 }
 
@@ -714,19 +823,30 @@ export function clearActivePromotion(state) {
  * @returns {VisitorState}
  */
 export function activatePromotion(state, promotion, now = Date.now()) {
+  const id = getPromotionId(promotion);
+  const sameActive = state.activePromotionKey === id;
+  const viewedKeys = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys
+    : [];
+  const alreadyViewed = sameActive
+    ? state.popupViewed || viewedKeys.includes(id)
+    : viewedKeys.includes(id);
   const validityHours = Math.max(0, Number(promotion.validityHours) || 0);
   return {
     ...state,
-    activePromotionKey: getPromotionId(promotion),
+    activePromotionKey: id,
     activeDiscountCode: hasDiscountCode(promotion.discountCode)
       ? String(promotion.discountCode).trim()
       : null,
     promotionActivatedAt: now,
     promotionExpiresAt: now + validityHours * 60 * 60 * 1000,
-    popupViewed: false,
-    popupDismissed: false,
-    popupDismissedAt: null,
-    badgeDismissed: false,
+    // Preserve show-once history when re-activating the same promotion.
+    popupViewed: alreadyViewed,
+    popupDismissed: sameActive ? state.popupDismissed : false,
+    popupDismissedAt: sameActive ? state.popupDismissedAt : null,
+    badgeDismissed: sameActive ? state.badgeDismissed : false,
+    hasActivatedPromotion: true,
+    viewedPromotionKeys: viewedKeys,
   };
 }
 

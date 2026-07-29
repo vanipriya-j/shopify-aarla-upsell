@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     environment: "node",
     include: [
-      "extensions/aarla-promotions/tests/**/*.{test,spec}.{js,ts}",
+      "tests/storefront/**/*.{test,spec}.{js,ts}",
       "app/**/*.test.ts",
     ],
     fileParallelism: false,

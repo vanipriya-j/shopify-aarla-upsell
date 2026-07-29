@@ -325,7 +325,7 @@ export async function ensureDefaultPromotions(shop: string) {
 
   await createPromotion(shop, {
     name: "First Visit Welcome",
-    enabled: false,
+    enabled: true,
     priority: 10,
     audienceType: "FIRST_VISIT",
     headline: "Welcome to Aarla",

@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build": "npm run build:extension && react-router build",
-    "build:extension": "esbuild extensions/aarla-promotions/src/main.js --bundle --outfile=extensions/aarla-promotions/assets/aarla-promotions.js --format=iife --target=es2018",
+    "build:extension": "esbuild storefront-engine/main.js --bundle --outfile=extensions/aarla-promotions/assets/aarla-promotions.js --format=iife --target=es2018 --minify",
     "dev": "npm run build:extension && shopify app dev",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",

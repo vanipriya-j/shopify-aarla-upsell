@@ -15,12 +15,30 @@ import {
   updatePromotionPriority,
 } from "../models/promotions.server";
 import { AUDIENCE_LABELS } from "../promotions/form";
+import {
+  buildEmbedDeepLink,
+  buildForceFirstVisitUrl,
+  readCliPreviewThemeId,
+} from "../promotions/setup-links.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   await ensureDefaultPromotions(session.shop);
   const promotions = await listPromotions(session.shop);
-  return { promotions, shop: session.shop };
+  const apiKey = process.env.SHOPIFY_API_KEY || "";
+  const previewThemeId = readCliPreviewThemeId(session.shop);
+  return {
+    promotions,
+    shop: session.shop,
+    previewThemeId,
+    embedDeepLink: buildEmbedDeepLink(session.shop, apiKey, previewThemeId),
+    liveEmbedDeepLink: buildEmbedDeepLink(session.shop, apiKey),
+    forceFirstVisitUrl: buildForceFirstVisitUrl(
+      session.shop,
+      previewThemeId,
+    ),
+    liveStoreUrl: `https://${session.shop}/`,
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -59,13 +77,59 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function PromotionsIndex() {
-  const { promotions } = useLoaderData<typeof loader>();
+  const {
+    promotions,
+    embedDeepLink,
+    liveEmbedDeepLink,
+    forceFirstVisitUrl,
+    previewThemeId,
+    liveStoreUrl,
+  } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Aarla Promotions">
       <s-button slot="primary-action" href="/app/promotions/new">
         Create promotion
       </s-button>
+
+      <s-section heading="Go live">
+        <s-paragraph>
+          Extension version <code>promotions-storefront-1</code> is released.
+          Enable the embed on the <strong>published</strong> theme (not only the
+          CLI preview), keep <strong>Test mode</strong> off, then verify the
+          live storefront.
+        </s-paragraph>
+        <s-stack direction="inline" gap="base">
+          <s-link href={liveEmbedDeepLink} target="_blank">
+            Enable embed on live theme
+          </s-link>
+          <s-link href={liveStoreUrl} target="_blank">
+            Open live storefront
+          </s-link>
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Dev / QA setup">
+        <s-paragraph>
+          During <code>shopify app dev</code>, first-visit QA uses the CLI
+          preview theme
+          {previewThemeId ? ` (${previewThemeId})` : ""}, not the published
+          theme.
+        </s-paragraph>
+        <s-stack direction="inline" gap="base">
+          <s-link href={embedDeepLink} target="_blank">
+            Activate preview theme embed
+          </s-link>
+          <s-link href={forceFirstVisitUrl} target="_blank">
+            Test first visit (one-shot)
+          </s-link>
+          <s-link href="/app/additional">Full setup guide</s-link>
+        </s-stack>
+        <s-paragraph>
+          If the popup keeps reopening, turn off <strong>Test mode</strong> on
+          the embed and save.
+        </s-paragraph>
+      </s-section>
 
       <s-section heading="Promotions">
         <s-paragraph>
@@ -147,8 +211,15 @@ export default function PromotionsIndex() {
 
       <s-section slot="aside" heading="Theme embed">
         <s-paragraph>
-          Enable <s-text type="strong">Aarla Promotions</s-text> under Online
-          Store → Themes → Customize → App embeds.
+          Enable <s-text type="strong">Aarla Promotions</s-text> under App
+          embeds, then Save. Opening the normal storefront URL without the
+          preview theme will not show the popup while you are running{" "}
+          <code>shopify app dev</code>.
+        </s-paragraph>
+        <s-paragraph>
+          <s-link href={embedDeepLink} target="_blank">
+            Open App embeds
+          </s-link>
         </s-paragraph>
         <s-paragraph>
           Create discount codes in Shopify Admin → Discounts, then reference the

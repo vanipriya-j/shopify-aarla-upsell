@@ -1,14 +1,15 @@
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "57fcbe52a4ccb6cf6751d94fbaea7002"
 name = "Aarla Promotions"
-client_id = ""
 application_url = "https://example.com"
 embedded = true
 
-[build]
-automatically_update_urls_on_dev = true
+[webhooks]
+api_version = "2026-10"
 
 [access_scopes]
-# Products/collections for resource pickers + collection expansion on save.
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
 scopes = "read_products"
 
 [auth]
@@ -19,13 +20,5 @@ url = "https://example.com/apps/aarla-promotions"
 subpath = "aarla-promotions"
 prefix = "apps"
 
-[webhooks]
-api_version = "2025-10"
-
-  [[webhooks.subscriptions]]
-  uri = "/webhooks/app/uninstalled"
-  topics = ["app/uninstalled"]
-
-  [[webhooks.subscriptions]]
-  topics = [ "app/scopes_update" ]
-  uri = "/webhooks/app/scopes_update"
+[build]
+automatically_update_urls_on_dev = true

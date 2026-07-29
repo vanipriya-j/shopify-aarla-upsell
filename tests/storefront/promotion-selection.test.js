@@ -1,12 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   activatePromotion,
+  applyDiscountCodeToCart,
   buildDiscountUrl,
   clearActivePromotion,
   createVisitorState,
   filterScheduledPromotions,
   hasDiscountCode,
   isFirstTimeVisitor,
+  markPopupViewed,
   matchesCollectionInCart,
   matchesLandingPage,
   matchesProductInCart,
@@ -16,21 +18,26 @@ import {
   resolveActivePromotion,
   selectPromotion,
   shouldSuppressPopup,
-} from "../src/engine.js";
+} from "../../storefront-engine/engine.js";
 import {
+  COOKIE_NAMESPACE,
+  VIEWED_COOKIE_NAMESPACE,
+  clearVisitorState,
   createMemoryStorage,
   ensureVisitorState,
+  readCookie,
   readVisitorState,
+  writeCookie,
   writeVisitorState,
-} from "../src/storage.js";
+} from "../../storefront-engine/storage.js";
 import {
   evaluatePromotionsForVisit,
   fetchActivePromotions,
-} from "../src/storefront.js";
+} from "../../storefront-engine/storefront.js";
 
 /**
- * @param {Partial<import('../src/engine.js').PromotionConfig> & { id: string }} overrides
- * @returns {import('../src/engine.js').PromotionConfig}
+ * @param {Partial<import('../../storefront-engine/engine.js').PromotionConfig> & { id: string }} overrides
+ * @returns {import('../../storefront-engine/engine.js').PromotionConfig}
  */
 function promo(overrides) {
   return {
@@ -253,7 +260,7 @@ describe("active promotion persistence", () => {
 
     state = activatePromotion(
       state,
-      /** @type {import('../src/engine.js').PromotionConfig} */ (
+      /** @type {import('../../storefront-engine/engine.js').PromotionConfig} */ (
         resolution.promotion
       ),
       now + 1_000,
@@ -284,6 +291,9 @@ describe("discount helpers", () => {
     expect(buildDiscountUrl("SAVE 50%", "/collections/all?sort=best")).toBe(
       "/discount/SAVE%2050%25?redirect=%2Fcollections%2Fall%3Fsort%3Dbest",
     );
+    expect(buildDiscountUrl("AARLA10", "")).toBe(
+      "/discount/AARLA10?redirect=%2Fcart",
+    );
   });
 
   it("treats empty discount codes as absent", () => {
@@ -291,9 +301,51 @@ describe("discount helpers", () => {
     expect(hasDiscountCode("   ")).toBe(false);
     expect(hasDiscountCode("AARLA10")).toBe(true);
   });
+
+  it("applies discount codes through cart/update.js and reads applicable", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        discount_codes: [{ code: "AARLA10", applicable: true }],
+      }),
+    }));
+    const result = await applyDiscountCodeToCart("AARLA10", fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/cart/update.js",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ discount: "AARLA10" }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.applicable).toBe(true);
+
+    const notApplicable = await applyDiscountCodeToCart("AARLA10", async () => ({
+      ok: true,
+      json: async () => ({
+        discount_codes: [{ code: "AARLA10", applicable: false }],
+      }),
+    }));
+    expect(notApplicable.applicable).toBe(false);
+    expect(notApplicable.error).toBe("not_applicable");
+  });
 });
 
 describe("popup suppression", () => {
+  // Never reopen while this promotion is still active and was already shown.
+  it("suppresses reopen after viewing even when showOnce is off", () => {
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: false },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    expect(
+      shouldSuppressPopup(state, { ...welcome, showOnce: false }, now + 1000),
+    ).toBe(true);
+  });
+
   it("suppresses reopen when show once is enabled after viewing", () => {
     const now = 1_700_000_000_000;
     let state = activatePromotion(
@@ -301,9 +353,26 @@ describe("popup suppression", () => {
       { ...welcome, showOnce: true },
       now,
     );
-    state = { ...state, popupViewed: true };
+    state = markPopupViewed(state, "welcome");
     expect(
       shouldSuppressPopup(state, { ...welcome, showOnce: true }, now + 1000),
+    ).toBe(true);
+  });
+
+  it("keeps show-once suppression after active promotion is cleared", () => {
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: true },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    state = clearActivePromotion(state);
+    // Re-activate same welcome on a later evaluation — still suppressed.
+    state = activatePromotion(state, { ...welcome, showOnce: true }, now + 10);
+    expect(state.viewedPromotionKeys).toContain("welcome");
+    expect(
+      shouldSuppressPopup(state, { ...welcome, showOnce: true }, now + 20),
     ).toBe(true);
   });
 });
@@ -338,7 +407,13 @@ describe("evaluatePromotionsForVisit", () => {
 
   it("does not show welcome for a returning browser", () => {
     const liveStorage = createMemoryStorage();
-    ensureVisitorState(liveStorage, 1_700_000_000_000);
+    // Returning = previously activated a promotion (not merely an empty shell).
+    const prior = activatePromotion(
+      createVisitorState(1_700_000_000_000),
+      campaignA,
+      1_700_000_000_000,
+    );
+    writeVisitorState(liveStorage, clearActivePromotion(prior));
     const result = evaluatePromotionsForVisit({
       config: { global: baseGlobal, promotions: [welcome] },
       liveStorage,
@@ -347,6 +422,113 @@ describe("evaluatePromotionsForVisit", () => {
       now: 1_700_000_000_100,
     });
     expect(result.activePromotion).toBeNull();
+  });
+
+  it("still treats empty leftover visit markers as first visit", () => {
+    const liveStorage = createMemoryStorage();
+    // Older builds wrote a visit marker even when no promo activated.
+    ensureVisitorState(liveStorage, 1_700_000_000_000);
+    expect(liveStorage.getItem("aarla_promotions")).toBeTruthy();
+
+    const result = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [welcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_100,
+    });
+    expect(result.activePromotion?.id).toBe("welcome");
+  });
+
+  it("does not persist localStorage when no promotion matches on first visit", () => {
+    const liveStorage = createMemoryStorage();
+    const result = evaluatePromotionsForVisit({
+      config: {
+        global: baseGlobal,
+        promotions: [{ ...welcome, enabled: false }],
+      },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(result.activePromotion).toBeNull();
+    expect(liveStorage.getItem("aarla_promotions")).toBeNull();
+
+    // A later visit with welcome enabled should still count as first visit.
+    const second = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [welcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_100,
+    });
+    expect(second.activePromotion?.id).toBe("welcome");
+  });
+
+  it("persists database promotion IDs across page loads", () => {
+    const liveStorage = createMemoryStorage();
+    const dbWelcome = promo({
+      id: "cms372cxo0000jsuxml5uk85t",
+      audienceType: "FIRST_VISIT",
+      discountCode: "AARLA10",
+      showOnce: true,
+    });
+    const first = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [dbWelcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(first.state.activePromotionKey).toBe("cms372cxo0000jsuxml5uk85t");
+    expect(readVisitorState(liveStorage)?.activePromotionKey).toBe(
+      "cms372cxo0000jsuxml5uk85t",
+    );
+
+    // Simulate popup viewed (showOnce) then reload.
+    writeVisitorState(liveStorage, {
+      .../** @type {NonNullable<ReturnType<typeof readVisitorState>>} */ (
+        readVisitorState(liveStorage)
+      ),
+      popupViewed: true,
+    });
+
+    const second = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [dbWelcome] },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_100,
+    });
+    expect(second.activePromotion?.id).toBe("cms372cxo0000jsuxml5uk85t");
+    expect(second.suppressPopup).toBe(true);
+    expect(readVisitorState(liveStorage)?.activePromotionKey).toBe(
+      "cms372cxo0000jsuxml5uk85t",
+    );
+  });
+
+  it("re-triggers first visit when aarla_force_first_visit=1", () => {
+    const liveStorage = createMemoryStorage();
+    const prior = activatePromotion(
+      createVisitorState(1_700_000_000_000),
+      campaignA,
+      1_700_000_000_000,
+    );
+    writeVisitorState(liveStorage, {
+      ...prior,
+      popupViewed: true,
+    });
+
+    const result = evaluatePromotionsForVisit({
+      config: { global: baseGlobal, promotions: [welcome] },
+      liveStorage,
+      search: "?aarla_force_first_visit=1",
+      pathname: "/",
+      now: 1_700_000_000_200,
+    });
+    expect(result.activePromotion?.id).toBe("welcome");
+    expect(result.suppressPopup).toBe(false);
   });
 
   it("keeps only one active promotion in storage", () => {
@@ -424,6 +606,43 @@ describe("evaluatePromotionsForVisit", () => {
     expect(result.testMode).toBe(true);
     expect(result.activePromotion?.id).toBe("campaign_a");
     expect(readVisitorState(liveStorage)).toEqual(before);
+  });
+
+  it("suppresses reopen in test mode when using persistent test storage", () => {
+    const liveStorage = createMemoryStorage();
+    const testStorage = createMemoryStorage();
+    const first = evaluatePromotionsForVisit({
+      config: {
+        global: { ...baseGlobal, testMode: true, testPreview: "automatic" },
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      testStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(first.suppressPopup).toBe(false);
+    writeVisitorState(
+      testStorage,
+      markPopupViewed(first.state, "welcome"),
+      { mirrorSession: false, writeCookies: false },
+    );
+
+    const second = evaluatePromotionsForVisit({
+      config: {
+        global: { ...baseGlobal, testMode: true, testPreview: "automatic" },
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      testStorage,
+      search: "",
+      pathname: "/collections/all",
+      now: 1_700_000_000_500,
+    });
+    expect(second.suppressPopup).toBe(true);
+    // Live storage untouched.
+    expect(readVisitorState(liveStorage)).toBeNull();
   });
 
   it("hides code-related controls when discount code is empty", () => {
@@ -704,5 +923,200 @@ describe("schedule and API fallback", () => {
     });
     expect(result.state.activePromotionKey).toBe("campaign_a");
     expect(result.activePromotion?.discountCode).toBe("CAMPAIGNA");
+  });
+  it("does not reopen show-once welcome after navigation", () => {
+    const liveStorage = createMemoryStorage();
+    const global = {
+      enabled: true,
+      testMode: false,
+      testPreview: /** @type {const} */ ("automatic"),
+      popupDelayMs: 0,
+      popupPosition: /** @type {const} */ ("center"),
+      popupMaxWidth: 420,
+      overlayOpacity: 0.45,
+      borderRadius: 12,
+      showReminderBadge: true,
+      debugLogging: false,
+    };
+    const first = evaluatePromotionsForVisit({
+      config: {
+        global,
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(first.activePromotion?.id).toBe("welcome");
+    expect(first.suppressPopup).toBe(false);
+
+    // Simulate popup open persistence.
+    writeVisitorState(
+      liveStorage,
+      markPopupViewed(first.state, "welcome"),
+    );
+
+    const second = evaluatePromotionsForVisit({
+      config: {
+        global,
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      search: "",
+      pathname: "/cart",
+      now: 1_700_000_000_500,
+    });
+    expect(second.activePromotion?.id).toBe("welcome");
+    expect(second.suppressPopup).toBe(true);
+    expect(second.state.viewedPromotionKeys).toContain("welcome");
+  });
+});
+
+describe("shouldForceFirstVisit", () => {
+  it("detects force query values", async () => {
+    const { shouldForceFirstVisit } = await import(
+      "../../storefront-engine/storefront.js"
+    );
+    expect(shouldForceFirstVisit("?aarla_force_first_visit=1")).toBe(true);
+    expect(shouldForceFirstVisit("?aarla_force_first_visit=true")).toBe(true);
+    expect(shouldForceFirstVisit("")).toBe(false);
+    expect(shouldForceFirstVisit("?utm_source=meta")).toBe(false);
+  });
+
+  it("strips the force param after one shot so refresh does not re-clear", async () => {
+    const { consumeForceFirstVisitParam } = await import(
+      "../../storefront-engine/storefront.js"
+    );
+    const replaced = [];
+    const fakeWindow = {
+      location: {
+        href: "https://aarla-dev.myshopify.com/?aarla_force_first_visit=1&preview_theme_id=1",
+      },
+      history: {
+        state: null,
+        replaceState(_state, _title, url) {
+          replaced.push(url);
+          fakeWindow.location.href = `https://aarla-dev.myshopify.com${url}`;
+        },
+      },
+    };
+    consumeForceFirstVisitParam(/** @type {any} */ (fakeWindow));
+    expect(replaced[0]).toBe("/?preview_theme_id=1");
+    expect(fakeWindow.location.href).not.toContain("aarla_force_first_visit");
+  });
+});
+
+describe("cookie persistence", () => {
+  /** @type {Map<string, string>} */
+  let cookieJar;
+  /** @type {unknown} */
+  let previousDocument;
+
+  beforeEach(() => {
+    cookieJar = new Map();
+    previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: {
+        get cookie() {
+          return Array.from(cookieJar.entries())
+            .map(([name, value]) => `${name}=${value}`)
+            .join("; ");
+        },
+        set cookie(raw) {
+          const [pair] = String(raw).split(";");
+          const eq = pair.indexOf("=");
+          if (eq < 0) return;
+          const name = pair.slice(0, eq).trim();
+          const value = pair.slice(eq + 1).trim();
+          if (String(raw).includes("Max-Age=0")) {
+            cookieJar.delete(name);
+            return;
+          }
+          cookieJar.set(name, value);
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    if (previousDocument === undefined) {
+      Reflect.deleteProperty(globalThis, "document");
+    } else {
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        writable: true,
+        value: previousDocument,
+      });
+    }
+  });
+
+  it("writes visitor state to both localStorage and cookie", () => {
+    const storage = createMemoryStorage();
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: true },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    writeVisitorState(storage, state);
+
+    expect(readVisitorState(storage)?.viewedPromotionKeys).toContain("welcome");
+    const cookieRaw = readCookie(COOKIE_NAMESPACE);
+    expect(cookieRaw).toBeTruthy();
+    const parsed = JSON.parse(/** @type {string} */ (cookieRaw));
+    expect(parsed.viewedPromotionKeys).toContain("welcome");
+    expect(parsed.popupViewed).toBe(true);
+  });
+
+  it("recovers viewed state from cookie when localStorage is empty", () => {
+    const storage = createMemoryStorage();
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: true },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    writeVisitorState(storage, state);
+
+    // Wipe localStorage only — cookie remains.
+    storage.clear();
+
+    const recovered = readVisitorState(storage);
+    expect(recovered?.viewedPromotionKeys).toContain("welcome");
+    expect(recovered?.popupViewed).toBe(true);
+    // Hydrates localStorage from cookie.
+    expect(storage.length).toBeGreaterThan(0);
+  });
+
+  it("clearVisitorState removes cookie and localStorage", () => {
+    const storage = createMemoryStorage();
+    writeCookie(COOKIE_NAMESPACE, JSON.stringify({ visitorId: "x" }));
+    writeVisitorState(
+      storage,
+      markPopupViewed(createVisitorState(1), "welcome"),
+    );
+    clearVisitorState(storage);
+    expect(readCookie(COOKIE_NAMESPACE)).toBeNull();
+    expect(readCookie(VIEWED_COOKIE_NAMESPACE)).toBeNull();
+    expect(storage.length).toBe(0);
+  });
+
+  it("recovers from compact viewed cookie when other stores are empty", () => {
+    const storage = createMemoryStorage();
+    writeCookie(
+      VIEWED_COOKIE_NAMESPACE,
+      "vid123|cms66eqx50000js3ilky6h8fx|cms66eqx50000js3ilky6h8fx|1700003600000|",
+    );
+    const recovered = readVisitorState(storage);
+    expect(recovered?.viewedPromotionKeys).toContain(
+      "cms66eqx50000js3ilky6h8fx",
+    );
+    expect(recovered?.popupViewed).toBe(true);
+    expect(recovered?.activePromotionKey).toBe("cms66eqx50000js3ilky6h8fx");
   });
 });
