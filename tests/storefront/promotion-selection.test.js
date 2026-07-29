@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   activatePromotion,
   applyDiscountCodeToCart,
@@ -8,6 +8,7 @@ import {
   filterScheduledPromotions,
   hasDiscountCode,
   isFirstTimeVisitor,
+  markPopupViewed,
   matchesCollectionInCart,
   matchesLandingPage,
   matchesProductInCart,
@@ -19,9 +20,13 @@ import {
   shouldSuppressPopup,
 } from "../../storefront-engine/engine.js";
 import {
+  COOKIE_NAMESPACE,
+  clearVisitorState,
   createMemoryStorage,
   ensureVisitorState,
+  readCookie,
   readVisitorState,
+  writeCookie,
   writeVisitorState,
 } from "../../storefront-engine/storage.js";
 import {
@@ -333,9 +338,26 @@ describe("popup suppression", () => {
       { ...welcome, showOnce: true },
       now,
     );
-    state = { ...state, popupViewed: true };
+    state = markPopupViewed(state, "welcome");
     expect(
       shouldSuppressPopup(state, { ...welcome, showOnce: true }, now + 1000),
+    ).toBe(true);
+  });
+
+  it("keeps show-once suppression after active promotion is cleared", () => {
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: true },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    state = clearActivePromotion(state);
+    // Re-activate same welcome on a later evaluation — still suppressed.
+    state = activatePromotion(state, { ...welcome, showOnce: true }, now + 10);
+    expect(state.viewedPromotionKeys).toContain("welcome");
+    expect(
+      shouldSuppressPopup(state, { ...welcome, showOnce: true }, now + 20),
     ).toBe(true);
   });
 });
@@ -850,6 +872,53 @@ describe("schedule and API fallback", () => {
     expect(result.state.activePromotionKey).toBe("campaign_a");
     expect(result.activePromotion?.discountCode).toBe("CAMPAIGNA");
   });
+  it("does not reopen show-once welcome after navigation", () => {
+    const liveStorage = createMemoryStorage();
+    const global = {
+      enabled: true,
+      testMode: false,
+      testPreview: /** @type {const} */ ("automatic"),
+      popupDelayMs: 0,
+      popupPosition: /** @type {const} */ ("center"),
+      popupMaxWidth: 420,
+      overlayOpacity: 0.45,
+      borderRadius: 12,
+      showReminderBadge: true,
+      debugLogging: false,
+    };
+    const first = evaluatePromotionsForVisit({
+      config: {
+        global,
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      search: "",
+      pathname: "/",
+      now: 1_700_000_000_000,
+    });
+    expect(first.activePromotion?.id).toBe("welcome");
+    expect(first.suppressPopup).toBe(false);
+
+    // Simulate popup open persistence.
+    writeVisitorState(
+      liveStorage,
+      markPopupViewed(first.state, "welcome"),
+    );
+
+    const second = evaluatePromotionsForVisit({
+      config: {
+        global,
+        promotions: [{ ...welcome, showOnce: true }],
+      },
+      liveStorage,
+      search: "",
+      pathname: "/cart",
+      now: 1_700_000_000_500,
+    });
+    expect(second.activePromotion?.id).toBe("welcome");
+    expect(second.suppressPopup).toBe(true);
+    expect(second.state.viewedPromotionKeys).toContain("welcome");
+  });
 });
 
 describe("shouldForceFirstVisit", () => {
@@ -861,5 +930,104 @@ describe("shouldForceFirstVisit", () => {
     expect(shouldForceFirstVisit("?aarla_force_first_visit=true")).toBe(true);
     expect(shouldForceFirstVisit("")).toBe(false);
     expect(shouldForceFirstVisit("?utm_source=meta")).toBe(false);
+  });
+});
+
+describe("cookie persistence", () => {
+  /** @type {Map<string, string>} */
+  let cookieJar;
+  /** @type {unknown} */
+  let previousDocument;
+
+  beforeEach(() => {
+    cookieJar = new Map();
+    previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: {
+        get cookie() {
+          return Array.from(cookieJar.entries())
+            .map(([name, value]) => `${name}=${value}`)
+            .join("; ");
+        },
+        set cookie(raw) {
+          const [pair] = String(raw).split(";");
+          const eq = pair.indexOf("=");
+          if (eq < 0) return;
+          const name = pair.slice(0, eq).trim();
+          const value = pair.slice(eq + 1).trim();
+          if (String(raw).includes("Max-Age=0")) {
+            cookieJar.delete(name);
+            return;
+          }
+          cookieJar.set(name, value);
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    if (previousDocument === undefined) {
+      Reflect.deleteProperty(globalThis, "document");
+    } else {
+      Object.defineProperty(globalThis, "document", {
+        configurable: true,
+        writable: true,
+        value: previousDocument,
+      });
+    }
+  });
+
+  it("writes visitor state to both localStorage and cookie", () => {
+    const storage = createMemoryStorage();
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: true },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    writeVisitorState(storage, state);
+
+    expect(readVisitorState(storage)?.viewedPromotionKeys).toContain("welcome");
+    const cookieRaw = readCookie(COOKIE_NAMESPACE);
+    expect(cookieRaw).toBeTruthy();
+    const parsed = JSON.parse(/** @type {string} */ (cookieRaw));
+    expect(parsed.viewedPromotionKeys).toContain("welcome");
+    expect(parsed.popupViewed).toBe(true);
+  });
+
+  it("recovers viewed state from cookie when localStorage is empty", () => {
+    const storage = createMemoryStorage();
+    const now = 1_700_000_000_000;
+    let state = activatePromotion(
+      createVisitorState(now),
+      { ...welcome, showOnce: true },
+      now,
+    );
+    state = markPopupViewed(state, "welcome");
+    writeVisitorState(storage, state);
+
+    // Wipe localStorage only — cookie remains.
+    storage.clear();
+
+    const recovered = readVisitorState(storage);
+    expect(recovered?.viewedPromotionKeys).toContain("welcome");
+    expect(recovered?.popupViewed).toBe(true);
+    // Hydrates localStorage from cookie.
+    expect(storage.length).toBeGreaterThan(0);
+  });
+
+  it("clearVisitorState removes cookie and localStorage", () => {
+    const storage = createMemoryStorage();
+    writeCookie(COOKIE_NAMESPACE, JSON.stringify({ visitorId: "x" }));
+    writeVisitorState(
+      storage,
+      markPopupViewed(createVisitorState(1), "welcome"),
+    );
+    clearVisitorState(storage);
+    expect(readCookie(COOKIE_NAMESPACE)).toBeNull();
+    expect(storage.length).toBe(0);
   });
 });

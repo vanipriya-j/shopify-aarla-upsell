@@ -9,13 +9,14 @@ import {
   getPromotionId,
   hasDiscountCode,
   isPromotionExpired,
+  markPopupViewed,
   readUtmParams,
   resolveActivePromotion,
   selectPromotion,
   shouldSuppressPopup,
-  STORAGE_NAMESPACE,
 } from "./engine.js";
 import {
+  clearVisitorState,
   createMemoryStorage,
   ensureVisitorState,
   readVisitorState,
@@ -266,9 +267,9 @@ export function evaluatePromotionsForVisit({
   const storage = testMode ? testStorage || createMemoryStorage() : liveStorage;
 
   const forceFirstVisit = shouldForceFirstVisit(search);
-  if (forceFirstVisit && liveStorage && !testMode) {
-    // Merchant QA helper: ?aarla_force_first_visit=1 clears the visit marker.
-    liveStorage.removeItem(STORAGE_NAMESPACE);
+  if (forceFirstVisit && !testMode) {
+    // Merchant QA helper: ?aarla_force_first_visit=1 clears visit markers.
+    clearVisitorState(liveStorage);
   }
 
   const liveSnapshot = liveStorage ? readVisitorState(liveStorage) : null;
@@ -650,7 +651,10 @@ function createUiController({ window, document, config, log }) {
     root.appendChild(overlay);
     isOpen = true;
 
-    evaluation.state.popupViewed = true;
+    evaluation.state = markPopupViewed(
+      evaluation.state,
+      getPromotionId(promo),
+    );
     persist();
 
     const closeBtn = dialog.querySelector(".aarla-promo-dialog__close");

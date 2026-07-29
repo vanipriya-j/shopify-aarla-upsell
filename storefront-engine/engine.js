@@ -91,6 +91,7 @@ export const AUDIENCE_MATCH_ORDER = /** @type {const} */ ([
  * @property {number | null} popupDismissedAt
  * @property {boolean} badgeDismissed
  * @property {boolean} [hasActivatedPromotion] sticky flag — survives clear/expiry
+ * @property {string[]} [viewedPromotionKeys] promotion ids whose popup was shown
  */
 
 /**
@@ -607,10 +608,15 @@ export function resolveActivePromotion({
  */
 export function shouldSuppressPopup(state, promotion, now = Date.now()) {
   const id = getPromotionId(promotion);
+  const viewedKeys = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys
+    : [];
+
+  // showOnce: suppress if this promotion's popup was already shown.
   if (
-    state.activePromotionKey === id &&
     promotion.showOnce &&
-    state.popupViewed
+    (viewedKeys.includes(id) ||
+      (state.activePromotionKey === id && state.popupViewed))
   ) {
     return true;
   }
@@ -628,6 +634,27 @@ export function shouldSuppressPopup(state, promotion, now = Date.now()) {
   }
 
   return false;
+}
+
+/**
+ * Mark a promotion popup as viewed (persists across activate/clear cycles).
+ * @param {VisitorState} state
+ * @param {string} promotionId
+ * @returns {VisitorState}
+ */
+export function markPopupViewed(state, promotionId) {
+  const id = String(promotionId || "").trim();
+  const existing = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys
+    : [];
+  const viewedPromotionKeys =
+    id && !existing.includes(id) ? [...existing, id] : existing;
+  return {
+    ...state,
+    popupViewed: true,
+    viewedPromotionKeys,
+    hasActivatedPromotion: true,
+  };
 }
 
 /**
@@ -737,6 +764,7 @@ export function createVisitorState(
     popupDismissedAt: null,
     badgeDismissed: false,
     hasActivatedPromotion: false,
+    viewedPromotionKeys: [],
   };
 }
 
@@ -768,13 +796,18 @@ export function clearActivePromotion(state) {
     popupDismissed: false,
     popupDismissedAt: null,
     badgeDismissed: false,
+    viewedPromotionKeys: Array.isArray(state.viewedPromotionKeys)
+      ? state.viewedPromotionKeys
+      : [],
     // Keep sticky visit marker so expired campaigns don't re-trigger first-visit.
     hasActivatedPromotion:
       Boolean(state.hasActivatedPromotion) ||
       Boolean(state.activePromotionKey) ||
       state.promotionActivatedAt != null ||
       state.popupViewed ||
-      state.popupDismissed,
+      state.popupDismissed ||
+      (Array.isArray(state.viewedPromotionKeys) &&
+        state.viewedPromotionKeys.length > 0),
   };
 }
 
@@ -785,20 +818,30 @@ export function clearActivePromotion(state) {
  * @returns {VisitorState}
  */
 export function activatePromotion(state, promotion, now = Date.now()) {
+  const id = getPromotionId(promotion);
+  const sameActive = state.activePromotionKey === id;
+  const viewedKeys = Array.isArray(state.viewedPromotionKeys)
+    ? state.viewedPromotionKeys
+    : [];
+  const alreadyViewed = sameActive
+    ? state.popupViewed || viewedKeys.includes(id)
+    : viewedKeys.includes(id);
   const validityHours = Math.max(0, Number(promotion.validityHours) || 0);
   return {
     ...state,
-    activePromotionKey: getPromotionId(promotion),
+    activePromotionKey: id,
     activeDiscountCode: hasDiscountCode(promotion.discountCode)
       ? String(promotion.discountCode).trim()
       : null,
     promotionActivatedAt: now,
     promotionExpiresAt: now + validityHours * 60 * 60 * 1000,
-    popupViewed: false,
-    popupDismissed: false,
-    popupDismissedAt: null,
-    badgeDismissed: false,
+    // Preserve show-once history when re-activating the same promotion.
+    popupViewed: alreadyViewed,
+    popupDismissed: sameActive ? state.popupDismissed : false,
+    popupDismissedAt: sameActive ? state.popupDismissedAt : null,
+    badgeDismissed: sameActive ? state.badgeDismissed : false,
     hasActivatedPromotion: true,
+    viewedPromotionKeys: viewedKeys,
   };
 }
 

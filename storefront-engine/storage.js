@@ -5,11 +5,80 @@ import {
   isFirstTimeVisitor,
 } from "./engine.js";
 
+export const COOKIE_NAMESPACE = "aarla_promotions";
+const COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24 * 365; // 1 year
+
+/**
+ * @returns {Document | null}
+ */
+function getDocument() {
+  return typeof document !== "undefined" ? document : null;
+}
+
+/**
+ * @param {string} name
+ * @returns {string | null}
+ */
+export function readCookie(name) {
+  const doc = getDocument();
+  if (!doc?.cookie) return null;
+  const parts = doc.cookie.split(";");
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed.startsWith(`${name}=`)) continue;
+    return decodeURIComponent(trimmed.slice(name.length + 1));
+  }
+  return null;
+}
+
+/**
+ * @param {string} name
+ * @param {string} value
+ * @param {number} [maxAgeSeconds]
+ */
+export function writeCookie(name, value, maxAgeSeconds = COOKIE_MAX_AGE_SECONDS) {
+  const doc = getDocument();
+  if (!doc) return;
+  const secure =
+    typeof location !== "undefined" && location.protocol === "https:"
+      ? "; Secure"
+      : "";
+  doc.cookie = `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAgeSeconds}; SameSite=Lax${secure}`;
+}
+
+/**
+ * @param {string} name
+ */
+export function clearCookie(name) {
+  const doc = getDocument();
+  if (!doc) return;
+  doc.cookie = `${name}=; Path=/; Max-Age=0; SameSite=Lax`;
+}
+
 /**
  * @param {Storage | null | undefined} storage
  * @returns {import('./engine.js').VisitorState | null}
  */
 export function readVisitorState(storage) {
+  const fromStorage = readFromLocalStorage(storage);
+  if (fromStorage) return fromStorage;
+  const fromCookie = readFromCookie();
+  // Recover localStorage when only the cookie survived (private mode, quota, etc.).
+  if (fromCookie && storage) {
+    try {
+      storage.setItem(STORAGE_NAMESPACE, JSON.stringify(fromCookie));
+    } catch {
+      // Ignore storage access errors.
+    }
+  }
+  return fromCookie;
+}
+
+/**
+ * @param {Storage | null | undefined} storage
+ * @returns {import('./engine.js').VisitorState | null}
+ */
+function readFromLocalStorage(storage) {
   if (!storage) return null;
   try {
     const raw = storage.getItem(STORAGE_NAMESPACE);
@@ -17,10 +86,12 @@ export function readVisitorState(storage) {
     const parsed = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object") return null;
     const state = normalizeState(parsed);
-    // Empty shells (written before any promo activated) must not block
-    // first-visit matching — treat them as absent.
     if (isEmptyVisitorShell(state)) {
-      storage.removeItem(STORAGE_NAMESPACE);
+      try {
+        storage.removeItem(STORAGE_NAMESPACE);
+      } catch {
+        // Ignore storage access errors.
+      }
       return null;
     }
     return state;
@@ -30,20 +101,59 @@ export function readVisitorState(storage) {
 }
 
 /**
+ * @returns {import('./engine.js').VisitorState | null}
+ */
+function readFromCookie() {
+  try {
+    const raw = readCookie(COOKIE_NAMESPACE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const state = normalizeState(parsed);
+    if (isEmptyVisitorShell(state)) {
+      clearCookie(COOKIE_NAMESPACE);
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist to localStorage and a first-party cookie so show-once survives
+ * browsers / embeds where localStorage is flaky.
  * @param {Storage | null | undefined} storage
  * @param {import('./engine.js').VisitorState} state
  */
 export function writeVisitorState(storage, state) {
-  if (!storage) return;
-  storage.setItem(STORAGE_NAMESPACE, JSON.stringify(state));
+  const payload = JSON.stringify(state);
+  if (storage) {
+    try {
+      storage.setItem(STORAGE_NAMESPACE, payload);
+    } catch {
+      // Quota / privacy mode — cookie still written below.
+    }
+  }
+  try {
+    writeCookie(COOKIE_NAMESPACE, payload);
+  } catch {
+    // Ignore cookie write failures.
+  }
 }
 
 /**
  * @param {Storage | null | undefined} storage
  */
 export function clearVisitorState(storage) {
-  if (!storage) return;
-  storage.removeItem(STORAGE_NAMESPACE);
+  if (storage) {
+    try {
+      storage.removeItem(STORAGE_NAMESPACE);
+    } catch {
+      // Ignore.
+    }
+  }
+  clearCookie(COOKIE_NAMESPACE);
 }
 
 /**
@@ -91,12 +201,18 @@ function normalizeState(raw) {
   const promotionActivatedAt = nullableNumber(raw.promotionActivatedAt);
   const popupViewed = Boolean(raw.popupViewed);
   const popupDismissed = Boolean(raw.popupDismissed);
+  const viewedPromotionKeys = Array.isArray(raw.viewedPromotionKeys)
+    ? raw.viewedPromotionKeys
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    : [];
   const hasActivatedPromotion =
     Boolean(raw.hasActivatedPromotion) ||
     Boolean(activePromotionKey) ||
     promotionActivatedAt != null ||
     popupViewed ||
-    popupDismissed;
+    popupDismissed ||
+    viewedPromotionKeys.length > 0;
 
   return {
     visitorId:
@@ -116,6 +232,7 @@ function normalizeState(raw) {
     popupDismissedAt: nullableNumber(raw.popupDismissedAt),
     badgeDismissed: Boolean(raw.badgeDismissed),
     hasActivatedPromotion,
+    viewedPromotionKeys,
   };
 }
 
@@ -142,7 +259,11 @@ function isEmptyVisitorShell(state) {
     state.promotionActivatedAt == null &&
     !state.popupViewed &&
     !state.popupDismissed &&
-    !state.activeDiscountCode
+    !state.activeDiscountCode &&
+    !(
+      Array.isArray(state.viewedPromotionKeys) &&
+      state.viewedPromotionKeys.length > 0
+    )
   );
 }
 
