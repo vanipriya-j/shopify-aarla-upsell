@@ -17,7 +17,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     shop,
     previewThemeId,
-    embedDeepLink: buildEmbedDeepLink(shop, apiKey),
+    embedDeepLink: buildEmbedDeepLink(shop, apiKey, previewThemeId),
     forceFirstVisitUrl: buildForceFirstVisitUrl(shop, previewThemeId),
   };
 };

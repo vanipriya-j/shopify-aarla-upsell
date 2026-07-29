@@ -31,7 +31,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     promotions,
     shop: session.shop,
     previewThemeId,
-    embedDeepLink: buildEmbedDeepLink(session.shop, apiKey),
+    embedDeepLink: buildEmbedDeepLink(session.shop, apiKey, previewThemeId),
     forceFirstVisitUrl: buildForceFirstVisitUrl(
       session.shop,
       previewThemeId,

@@ -7,8 +7,15 @@ const EMBED_HANDLE = "aarla-promotions-embed";
 /**
  * Build theme-editor deep link to activate the Aarla Promotions app embed.
  */
-export function buildEmbedDeepLink(shop: string, apiKey: string) {
-  return `https://${shop}/admin/themes/current/editor?context=apps&activateAppId=${encodeURIComponent(
+export function buildEmbedDeepLink(
+  shop: string,
+  apiKey: string,
+  themeId?: string | null,
+) {
+  const themeSegment = themeId
+    ? encodeURIComponent(themeId)
+    : "current";
+  return `https://${shop}/admin/themes/${themeSegment}/editor?context=apps&activateAppId=${encodeURIComponent(
     apiKey,
   )}/${EMBED_HANDLE}`;
 }
