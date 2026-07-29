@@ -1,5 +1,6 @@
 import {
   activatePromotion,
+  applyDiscountCodeToCart,
   buildDiscountUrl,
   clearActivePromotion,
   createVisitorState,
@@ -595,9 +596,11 @@ function createUiController({ window, document, config, log }) {
     const code = hasDiscountCode(promo.discountCode)
       ? String(promo.discountCode).trim()
       : "";
+    // Prefer /cart after apply so shoppers can see the attached code.
+    const destination = getCtaUrl(promo) || "/cart";
     const ctaHref = code
-      ? buildDiscountUrl(code, getCtaUrl(promo))
-      : getCtaUrl(promo);
+      ? buildDiscountUrl(code, destination === "/" ? "/cart" : destination)
+      : destination;
     const ctaLabel = code
       ? promo.ctaText || config.i18n?.apply_and_shop || "Apply and shop"
       : promo.ctaText || "Shop";
@@ -637,6 +640,7 @@ function createUiController({ window, document, config, log }) {
             </div>`
           : ""
       }
+      <p class="aarla-promo-dialog__status" data-aarla-status hidden></p>
       <a class="aarla-promo-dialog__cta" href="${escapeAttribute(ctaHref)}">${escapeHtml(
         ctaLabel,
       )}</a>
@@ -655,6 +659,16 @@ function createUiController({ window, document, config, log }) {
       if (event.target === overlay) closePopup({ dismissed: true });
     });
 
+    const statusEl = /** @type {HTMLElement | null} */ (
+      dialog.querySelector("[data-aarla-status]")
+    );
+    const setStatus = (message, tone = "info") => {
+      if (!statusEl) return;
+      statusEl.hidden = !message;
+      statusEl.textContent = message || "";
+      statusEl.dataset.tone = tone;
+    };
+
     const copyBtn = dialog.querySelector(".aarla-promo-dialog__copy");
     copyBtn?.addEventListener("click", async () => {
       try {
@@ -664,6 +678,66 @@ function createUiController({ window, document, config, log }) {
         log("clipboard copy failed");
       }
     });
+
+    const cta = /** @type {HTMLAnchorElement | null} */ (
+      dialog.querySelector(".aarla-promo-dialog__cta")
+    );
+    if (cta && code) {
+      cta.addEventListener("click", async (event) => {
+        event.preventDefault();
+        cta.setAttribute("aria-busy", "true");
+        cta.classList.add("aarla-promo-dialog__cta--busy");
+        setStatus(
+          config.i18n?.applying_code || "Applying code to your cart…",
+          "info",
+        );
+
+        const result = await applyDiscountCodeToCart(
+          code,
+          window.fetch.bind(window),
+        );
+        log("discount apply", result);
+
+        if (result.ok && result.applicable) {
+          setStatus(
+            (config.i18n?.code_applied || "{{ code }} added to your cart").replace(
+              "{{ code }}",
+              code,
+            ),
+            "success",
+          );
+          window.setTimeout(() => {
+            window.location.assign(destination === "/" ? "/cart" : destination);
+          }, 350);
+          return;
+        }
+
+        if (result.ok && !result.applicable) {
+          setStatus(
+            (
+              config.i18n?.code_not_applicable ||
+              "{{ code }} was attached, but Shopify says it is not applicable. Create an active discount with this exact code in Admin → Discounts."
+            ).replace("{{ code }}", code),
+            "error",
+          );
+          cta.removeAttribute("aria-busy");
+          cta.classList.remove("aarla-promo-dialog__cta--busy");
+          // Still use the classic discount URL so the cookie is set, then cart.
+          window.setTimeout(() => {
+            window.location.assign(buildDiscountUrl(code, "/cart"));
+          }, 1600);
+          return;
+        }
+
+        // Network / endpoint failure — fall back to /discount/CODE redirect.
+        setStatus(
+          config.i18n?.code_apply_fallback ||
+            "Opening Shopify discount link…",
+          "info",
+        );
+        window.location.assign(ctaHref);
+      });
+    }
 
     document.addEventListener("keydown", onKeyDown);
     window.setTimeout(() => {
@@ -779,4 +853,4 @@ function escapeAttribute(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
 }
 
-export { buildDiscountUrl, hasDiscountCode };
+export { applyDiscountCodeToCart, buildDiscountUrl, hasDiscountCode };

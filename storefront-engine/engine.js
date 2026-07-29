@@ -640,9 +640,71 @@ export function buildDiscountUrl(code, redirectPath) {
   const path =
     redirectPath && String(redirectPath).trim()
       ? String(redirectPath).trim()
-      : "/";
+      : "/cart";
   const encodedRedirect = encodeURIComponent(path);
   return `/discount/${encodedCode}?redirect=${encodedRedirect}`;
+}
+
+/**
+ * Apply a discount code to the Ajax cart. Returns whether Shopify marks the
+ * code applicable (requires a real Admin discount to exist).
+ * @param {string} code
+ * @param {typeof fetch} [fetchImpl]
+ * @returns {Promise<{ ok: boolean, applicable: boolean, cart: Record<string, unknown> | null, error?: string }>}
+ */
+export async function applyDiscountCodeToCart(code, fetchImpl) {
+  const trimmed = String(code || "").trim();
+  if (!trimmed) {
+    return { ok: false, applicable: false, cart: null, error: "missing_code" };
+  }
+  const fetchFn =
+    typeof fetchImpl === "function"
+      ? fetchImpl
+      : typeof fetch === "function"
+        ? fetch
+        : null;
+  if (!fetchFn) {
+    return { ok: false, applicable: false, cart: null, error: "no_fetch" };
+  }
+
+  try {
+    const response = await fetchFn("/cart/update.js", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      credentials: "same-origin",
+      body: JSON.stringify({ discount: trimmed }),
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        applicable: false,
+        cart: null,
+        error: `http_${response.status}`,
+      };
+    }
+    const cart = await response.json();
+    const codes = Array.isArray(cart?.discount_codes) ? cart.discount_codes : [];
+    const match = codes.find(
+      (entry) =>
+        normalizeMatchValue(entry?.code) === normalizeMatchValue(trimmed),
+    );
+    const applicable = Boolean(match?.applicable);
+    return {
+      ok: true,
+      applicable,
+      cart,
+      error: match
+        ? applicable
+          ? undefined
+          : "not_applicable"
+        : "not_attached",
+    };
+  } catch {
+    return { ok: false, applicable: false, cart: null, error: "network" };
+  }
 }
 
 /**

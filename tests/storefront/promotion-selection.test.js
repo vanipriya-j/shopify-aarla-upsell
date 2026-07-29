@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   activatePromotion,
+  applyDiscountCodeToCart,
   buildDiscountUrl,
   clearActivePromotion,
   createVisitorState,
@@ -284,12 +285,43 @@ describe("discount helpers", () => {
     expect(buildDiscountUrl("SAVE 50%", "/collections/all?sort=best")).toBe(
       "/discount/SAVE%2050%25?redirect=%2Fcollections%2Fall%3Fsort%3Dbest",
     );
+    expect(buildDiscountUrl("AARLA10", "")).toBe(
+      "/discount/AARLA10?redirect=%2Fcart",
+    );
   });
 
   it("treats empty discount codes as absent", () => {
     expect(hasDiscountCode("")).toBe(false);
     expect(hasDiscountCode("   ")).toBe(false);
     expect(hasDiscountCode("AARLA10")).toBe(true);
+  });
+
+  it("applies discount codes through cart/update.js and reads applicable", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        discount_codes: [{ code: "AARLA10", applicable: true }],
+      }),
+    }));
+    const result = await applyDiscountCodeToCart("AARLA10", fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/cart/update.js",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ discount: "AARLA10" }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.applicable).toBe(true);
+
+    const notApplicable = await applyDiscountCodeToCart("AARLA10", async () => ({
+      ok: true,
+      json: async () => ({
+        discount_codes: [{ code: "AARLA10", applicable: false }],
+      }),
+    }));
+    expect(notApplicable.applicable).toBe(false);
+    expect(notApplicable.error).toBe("not_applicable");
   });
 });
 

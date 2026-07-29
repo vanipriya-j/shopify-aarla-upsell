@@ -55,11 +55,22 @@ export default function SetupGuide() {
         </s-paragraph>
       </s-section>
 
-      <s-section heading="3. Create the Shopify discount">
+      <s-section heading="3. Create the Shopify discount (required for cart)">
         <s-paragraph>
-          Create discount code <s-text type="strong">AARLA10</s-text> (or
-          whatever code the promotion uses) in Shopify Admin → Discounts. This
-          app only displays the code — Shopify owns the actual discount.
+          The popup can attach a code to the cart, but Shopify only marks it
+          applicable when a real discount exists. Create code{" "}
+          <s-text type="strong">AARLA10</s-text> (exact match) in{" "}
+          <s-link
+            href={`https://admin.shopify.com/store/${shop.replace(/\.myshopify\.com$/i, "")}/discounts/new`}
+            target="_blank"
+          >
+            Admin → Discounts
+          </s-link>
+          : percentage or amount off, active, and available to customers.
+        </s-paragraph>
+        <s-paragraph>
+          Until that discount exists, cart JSON shows{" "}
+          <code>applicable: false</code> and no money comes off.
         </s-paragraph>
       </s-section>
 
